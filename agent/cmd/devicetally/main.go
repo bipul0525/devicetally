@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"devicetally/agent/internal/activity"
 	"devicetally/agent/internal/health"
+	"devicetally/agent/internal/tools"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -321,18 +323,23 @@ func enroll(args []string) error {
 		return fmt.Errorf("usage: devicetally enroll <server-url> <code>")
 	}
 	server, code := strings.TrimRight(args[0], "/"), strings.ToUpper(args[1])
+	// Already connected to this server with a working key (e.g. the command was run twice)?
+	if st, err := state.Load(); err == nil && st.DeviceKey != "" && strings.TrimRight(st.Server, "/") == server && keyWorks(st) {
+		fmt.Println("✓ This computer is already connected to " + strings.TrimPrefix(server, "https://") + ". Nothing to do.")
+		return nil
+	}
 	exe, err := install()
 	if err != nil {
 		return err
 	}
 
 	body := map[string]any{"code": code, "os": runtime.GOOS, "arch": runtime.GOARCH, "agent_version": Version}
+	account := ""
 	if a := syncer.CurrentAccount(state.ClaudeDirs()[0]); a != nil {
 		if ask(fmt.Sprintf("Track Claude account %s?", a.Email)) {
 			body["account"] = a
+			account = a.Email
 		}
-	} else {
-		fmt.Println("No Claude account is signed in yet. Approve it in the DeviceTally app (Accounts) once you sign in.")
 	}
 	b, _ := json.Marshal(body)
 	res, err := (&http.Client{Timeout: 15 * time.Second}).Post(server+"/api/v1/enroll", "application/json", bytes.NewReader(b))
@@ -341,7 +348,7 @@ func enroll(args []string) error {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("enroll failed (%s): the code may be wrong, used or expired. Make a new one in the DeviceTally app (Devices, Add device)", res.Status)
+		return fmt.Errorf("couldn't connect (%s): the code is wrong, already used or expired (codes work once, for 15 minutes). Make a new one in the DeviceTally app: Devices → Add device", res.Status)
 	}
 	var out struct {
 		DeviceID  string `json:"device_id"`
@@ -371,13 +378,69 @@ func enroll(args []string) error {
 	}
 	// Import existing history now, so the one message at the end means it is really done.
 	fmt.Print("Connecting...")
+	done := "✓ " + out.Name + " is connected."
 	if err := syncCmd(); err != nil {
 		spawn.Detached("sync")
-		fmt.Printf("\r\033[K✓ %s is connected. History will finish uploading in the background.\n", out.Name)
-		return nil
+		done += " History will finish uploading in the background."
 	}
-	fmt.Printf("\r\033[K✓ %s is connected.\n", out.Name)
+	fmt.Print("\r\033[K" + done + "\n")
+	tracked := []string{}
+	if st, err := state.Load(); err == nil {
+		tracked = st.ToolsTracked
+	}
+	fmt.Print(enrollSummary(account, tracked, tools.Detect()))
 	return nil
+}
+
+// keyWorks reports whether the saved device key is still accepted (not disconnected).
+func keyWorks(st *state.State) bool {
+	req, _ := http.NewRequest("GET", strings.TrimRight(st.Server, "/")+"/api/v1/config", nil)
+	req.Header.Set("Authorization", "Bearer "+st.DeviceKey)
+	res, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return false
+	}
+	res.Body.Close()
+	return res.StatusCode == http.StatusOK
+}
+
+// enrollSummary says what this computer will track. A computer without a Claude account is fine:
+// other AI tools, the menu bar, storage and health all work without one.
+func enrollSummary(account string, tracked, found []string) string {
+	names := map[string]string{"claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode", "kimi": "Kimi"}
+	label := func(ids []string) string {
+		var out []string
+		for _, id := range ids {
+			if n, ok := names[id]; ok {
+				out = append(out, n)
+			} else {
+				out = append(out, id)
+			}
+		}
+		return strings.Join(out, ", ")
+	}
+	var b strings.Builder
+	var on []string
+	if account != "" {
+		on = append(on, "claude")
+	}
+	on = append(on, tracked...)
+	if len(on) > 0 {
+		fmt.Fprintf(&b, "  Tracking: %s.\n", label(on))
+	}
+	var off []string
+	for _, f := range found {
+		if !slices.Contains(tracked, f) {
+			off = append(off, f)
+		}
+	}
+	if len(off) > 0 {
+		fmt.Fprintf(&b, "  Also found %s: the admin can turn it on in Settings → Other AI tools.\n", label(off))
+	}
+	if account == "" {
+		b.WriteString("  Claude Code: no account signed in yet. Once someone signs in, the admin approves it under Devices → Claude accounts.\n")
+	}
+	return b.String()
 }
 
 // linkOnPath makes `devicetally` runnable by name: a symlink in the first writable folder already on PATH

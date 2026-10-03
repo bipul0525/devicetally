@@ -40,3 +40,14 @@ func TestLinkOnPath(t *testing.T) {
 		t.Fatal("must not replace a file it did not create")
 	}
 }
+
+func TestEnrollSummary(t *testing.T) {
+	got := enrollSummary("", []string{"codex", "opencode"}, []string{"codex", "opencode", "kimi"})
+	want := "  Tracking: Codex, OpenCode.\n  Also found Kimi: the admin can turn it on in Settings → Other AI tools.\n  Claude Code: no account signed in yet. Once someone signs in, the admin approves it under Devices → Claude accounts.\n"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if got := enrollSummary("you@example.com", nil, nil); got != "  Tracking: Claude Code.\n" {
+		t.Fatalf("with a Claude account: %q", got)
+	}
+}

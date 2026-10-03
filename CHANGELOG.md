@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2
+
+- Joining a computer says what it tracks (e.g. "Tracking: Codex, OpenCode"), notes other AI tools found, and mentions Claude Code only as a note when no account is signed in. A computer without Claude Code is fully supported.
+- Running the join command again on a connected computer says "already connected" instead of an error; a used or expired code gets a clear explanation.
+
 ## 1.0.1
 
 - **Menu bar tab, like Stats:** a sidebar with icons and on/off switches on the left; the selected item's settings and the live preview on the right, at any window width.
