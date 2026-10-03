@@ -1116,7 +1116,7 @@ function Slider({ id, label, hint, min, max, step, value, fmt, live, save, reset
 
 const LABEL_OPTS: Record<string, [ItemStyle['label'], string][]> = {
   clock: [['', 'None'], ['icon', 'Icon']],
-  agent: [['', 'Pill'], ['icon', 'Icon + text'], ['none', 'Dot']],
+  agent: [['', 'Ring'], ['text', 'Ring + word']],
   net: [['', 'Default'], ['text', 'Arrows'], ['none', 'None']],
   battery: [['', 'Default'], ['text', 'Text'], ['icon', 'Icon'], ['inside', 'In icon'], ['none', 'None']],
 }
@@ -1151,7 +1151,7 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
     <div class="mb-pane">
       <div class="mb-pane-head">
         <div><h2 style={{ margin: 0 }}>{name}</h2><span class="hint" style={{ margin: 0 }}>{ITEM_HINT[k]}</span></div>
-        <label class="switch"><input type="checkbox" checked={on} onChange={() => save({ ...cfg, items: on ? cfg.items.filter((x) => x !== k) : [...cfg.items, k] })} /> Show in menu bar</label>
+        <label class="switch"><span>{on ? 'Shown' : 'Hidden'}</span><input type="checkbox" class="toggle" checked={on} onChange={() => save({ ...cfg, items: on ? cfg.items.filter((x) => x !== k) : [...cfg.items, k] })} /></label>
       </div>
       {on ? <>
         <div class="group">
@@ -1165,7 +1165,7 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
           <Slider id={`sz-${k}`} label="Size" min={70} max={140} step={5} value={Math.round((st.scale || 1) * 100)} fmt={(v) => `${v}%`}
             live={(v) => live(with_({ scale: v / 100 }))} save={(v) => save(with_({ scale: v / 100 }))} reset={st.scale && st.scale !== 1 ? () => save(with_({ scale: 0 })) : undefined} />
           {k !== 'agent' && <div class="field"><span>{insideBattery ? 'Battery colour' : 'Number colour'}</span><ColorPick label="Number colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
-          {k === 'agent' && st.label === 'icon' && <div class="field"><span>Text colour</span><ColorPick label="Text colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
+          {k === 'agent' && (st.label === 'text' || st.label === 'icon') && <div class="field"><span>Word colour</span><ColorPick label="Text colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
           {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field"><span>{k === 'clock' ? 'Icon colour' : 'Label colour'}</span><ColorPick label="Label colour" value={st.label_color} onChange={(v) => save(with_({ label_color: v }))} /></div>}
         </div>
         {k === 'clock' && <div class="group" style={{ marginTop: 10 }}>
@@ -1177,7 +1177,7 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
             <label><input type="checkbox" checked={c.month} onChange={(e) => clock({ month: e.currentTarget.checked })} /> Month (Oct)</label>
           </span></div>
         </div>}
-        {k === 'agent' && <p class="hint">The colours show the state: orange working, red needs you, green done, grey idle. Notifications and sounds: <b>Agent status and alerts</b> on the left.</p>}
+        {k === 'agent' && <p class="hint">The ring shows the state: an orange ring that turns while an agent works, a red ! when it needs you, a green ✓ when it's done (until you open DeviceTally from the menu bar), grey when idle. Notifications and sounds: <b>Alerts</b> on the left.</p>}
         {k !== 'agent' && <p class="hint"><b>Auto</b> colour follows the menu bar: black in light mode, white in dark mode.{(k === 'battery' || k === 'clock') && " Using DeviceTally's? You can hide macOS's own in System Settings → Control Center."}</p>}
       </> : <p class="hint">Turn on "Show in menu bar" to add it. It goes at the end; move it from here.</p>}
     </div>
@@ -1213,9 +1213,9 @@ function AlertsPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCfg
   const set = (patch: Partial<MenuBarCfg['alerts']>) => save({ ...cfg, alerts: { ...a, ...patch } })
   return (
     <div class="mb-pane">
-      <div class="mb-pane-head"><div><h2 style={{ margin: 0 }}>Agent status and alerts</h2><span class="hint" style={{ margin: 0 }}>Know when a coding agent finishes or needs you, while you work in another window.</span></div></div>
+      <div class="mb-pane-head"><div><h2 style={{ margin: 0 }}>Alerts</h2><span class="hint" style={{ margin: 0 }}>Know when a coding agent finishes or needs you, while you work in another window.</span></div></div>
       <div class="group">
-        <div class="field"><span>In the menu bar<div class="hint" style={{ margin: 0 }}>Show it with the <b>Agent status</b> item (on the left): a pill, an icon with text, or a dot.</div></span>
+        <div class="field"><span>In the menu bar<div class="hint" style={{ margin: 0 }}>Show it with the <b>Agent status</b> item (on the left): a ring, or a ring with a word.</div></span>
           <label class="switch"><input type="checkbox" checked={cfg.items.includes('agent')} onChange={(e) => save({ ...cfg, items: e.currentTarget.checked ? ['agent', ...cfg.items.filter((x) => x !== 'agent')] : cfg.items.filter((x) => x !== 'agent') })} /> Show</label></div>
         <AlertRow title="When a task finishes" hint="Claude Code and Codex" banner={a.done_banner} soundOn={a.done_sound_on} sound={a.done_sound}
           onBanner={(v) => set({ done_banner: v })} onSoundOn={(v) => set({ done_sound_on: v })} onSound={(v) => set({ done_sound: v })} test={() => invoke('test_alert', { waiting: false })} />
@@ -1232,7 +1232,24 @@ function AlertsPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCfg
   )
 }
 
-/** Menu bar tab: preview on top, sections on the left (like Stats), the selected one on the right. */
+// Sidebar icons (simple line drawings, in the text colour).
+const NAV_ICON: Record<string, ComponentChildren> = {
+  general: <><path d="M3 5h10M3 11h10" /><circle cx="6" cy="5" r="1.6" fill="currentColor" /><circle cx="10" cy="11" r="1.6" fill="currentColor" /></>,
+  alerts: <><path d="M4.5 11V7.5a3.5 3.5 0 0 1 7 0V11l1 1.2H3.5z" /><path d="M7 13.5a1.2 1.2 0 0 0 2 0" /></>,
+  agent: <><circle cx="8" cy="8" r="5" /><path d="M5.8 8.2l1.5 1.5 3-3.2" /></>,
+  tokens: <path d="M8 2.5l1.2 3.3 3.3 1.2-3.3 1.2L8 11.5 6.8 8.2 3.5 7l3.3-1.2z" />,
+  net: <path d="M5.5 12.5v-9M3.5 5.5l2-2 2 2M10.5 3.5v9M8.5 10.5l2 2 2-2" />,
+  cpu: <><rect x="4.5" y="4.5" width="7" height="7" rx="1" /><path d="M6.5 2.5v2M9.5 2.5v2M6.5 11.5v2M9.5 11.5v2M2.5 6.5h2M2.5 9.5h2M11.5 6.5h2M11.5 9.5h2" /></>,
+  temp: <><path d="M7 3.5a1 1 0 0 1 2 0v5.3a2.5 2.5 0 1 1-2 0z" /></>,
+  mem: <><rect x="2.5" y="5" width="11" height="5" rx="0.8" /><path d="M5 10v2M8 10v2M11 10v2M5 7v1M8 7v1M11 7v1" /></>,
+  disk: <><rect x="2.5" y="5" width="11" height="6" rx="1.2" /><circle cx="11" cy="8" r="0.6" fill="currentColor" /></>,
+  battery: <><rect x="2.5" y="5" width="10" height="6" rx="1.5" /><path d="M13.5 7v2" /><rect x="4" y="6.5" width="5" height="3" rx="0.6" fill="currentColor" stroke="none" /></>,
+  clock: <><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3.2l2 1.3" /></>,
+}
+const NavIcon = ({ k }: { k: string }) => <svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{NAV_ICON[k]}</svg>
+
+/** Menu bar tab, laid out like Stats: sections on the left, the selected one (with the live
+ *  preview on top) on the right, at any window width. */
 function MenuBarTab() {
   const [cfg, setCfg] = useState<MenuBarCfg | null>(null)
   const [sel, setSel] = useState('general')
@@ -1276,24 +1293,24 @@ function MenuBarTab() {
   const hidden = MB_ITEMS.filter(([k]) => !cfg.items.includes(k))
   const toggle = (k: string) => save({ ...cfg, items: cfg.items.includes(k) ? cfg.items.filter((x) => x !== k) : [...cfg.items, k] })
   const NavItem = ({ k, l, on }: { k: string; l: string; on?: boolean }) => (
-    <div class={`mb-nav-item ${sel === k ? 'active' : ''}`}>
-      <button class="mb-nav-btn" onClick={() => setSel(k)}>{l}</button>
-      {on !== undefined && <input type="checkbox" aria-label={`Show ${l}`} title={on ? 'Shown in the menu bar' : 'Not shown'} checked={on} onChange={() => toggle(k)} />}
+    <div class={`mb-nav-item ${sel === k ? 'active' : ''} ${on === false ? 'off' : ''}`}>
+      <button class="mb-nav-btn" onClick={() => setSel(k)}><NavIcon k={k} /><span>{l}</span></button>
+      {on !== undefined && <input type="checkbox" class="toggle" aria-label={`Show ${l}`} title={on ? 'Shown in the menu bar' : 'Not shown'} checked={on} onChange={() => toggle(k)} />}
     </div>
   )
   return (
-    <div class="page mb-page">
-      <div class="mb-top"><Preview cfg={cfg} /></div>
-      <div class="mb-layout">
-        <nav class="mb-nav" aria-label="Menu bar sections">
-          <NavItem k="general" l="General" />
-          <NavItem k="alerts" l="Agent status and alerts" />
-          <div class="mb-nav-h">In the menu bar, left to right</div>
-          {shown.map(([k, l]) => <NavItem key={k} k={k} l={l} on />)}
-          {!shown.length && <div class="hint" style={{ margin: '2px 8px' }}>Nothing yet</div>}
-          {hidden.length > 0 && <div class="mb-nav-h">Not shown</div>}
-          {hidden.map(([k, l]) => <NavItem key={k} k={k} l={l} on={false} />)}
-        </nav>
+    <div class="mb-split">
+      <nav class="mb-side" aria-label="Menu bar sections">
+        <NavItem k="general" l="General" />
+        <NavItem k="alerts" l="Alerts" />
+        <div class="mb-nav-h">In the menu bar</div>
+        {shown.map(([k, l]) => <NavItem key={k} k={k} l={l} on />)}
+        {!shown.length && <div class="hint" style={{ margin: '2px 10px' }}>Nothing yet</div>}
+        {hidden.length > 0 && <div class="mb-nav-h">More</div>}
+        {hidden.map(([k, l]) => <NavItem key={k} k={k} l={l} on={false} />)}
+      </nav>
+      <div class="mb-main">
+        <div class="mb-top"><Preview cfg={cfg} /></div>
         {sel === 'general' ? <GeneralPane cfg={cfg} save={save} live={live} />
           : sel === 'alerts' ? <AlertsPane cfg={cfg} save={save} live={live} />
           : <ItemPane k={sel} cfg={cfg} save={save} live={live} />}

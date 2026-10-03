@@ -147,8 +147,9 @@ pub enum Icon {
     Clock,
     Dot([u8; 3]), // the Claude Code status dot, in its own colour
     BatteryIn(f32, bool), // battery with the percentage inside (charge 0..1, charging)
-    AgentPill(Agent, u8), // agent status as a coloured capsule with a symbol and word (sessions)
-    AgentIcon(Agent),     // agent status symbol in its colour (the word is the unit's value)
+    /// Agent status: a ring (working, turning with `phase` 0..7), a red "!" (needs you), a green ✓
+    /// (done) or a grey ring (idle). Drawn in its own colours.
+    AgentRing(Agent, u8),
 }
 
 /// What coding agents are doing on this computer, most urgent first.
@@ -166,9 +167,6 @@ impl Agent {
     }
     fn word(self) -> &'static str {
         match self { Agent::Waiting => "Needs you", Agent::Working => "Working", Agent::Done => "Done", Agent::Idle => "Idle" }
-    }
-    fn symbol(self) -> &'static str {
-        match self { Agent::Waiting => "exclamationmark.circle.fill", Agent::Working => "circle.dotted.circle", Agent::Done => "checkmark.circle.fill", Agent::Idle => "moon.zzz.fill" }
     }
 }
 
@@ -195,6 +193,8 @@ impl Unit {
 pub struct Values {
     /// Coding agents: the most urgent state and how many sessions are in it.
     pub agent: (Agent, u8),
+    /// Animation step for the working ring (0..7).
+    pub tick: u8,
     pub tokens: Option<String>,
     pub stats: crate::stats::Stats,
     pub now: chrono::NaiveDateTime,
@@ -249,11 +249,9 @@ pub fn units(cfg: &MenuBar, v: &Values) -> Vec<Unit> {
             "agent" => {
                 let (a, n) = v.agent;
                 let unit = |icon, value: String| Unit { kind: "agent", label: String::new(), icon: Some(icon), value, template: String::new(), scale, color: vc, label_color: lc, layout: "row".into() };
-                out.push(match st.label.as_str() {
-                    "icon" => unit(Icon::AgentIcon(a), if n > 1 { format!("{} {n}", a.word()) } else { a.word().into() }),
-                    "none" => unit(Icon::Dot(a.rgb()), String::new()),
-                    _ => unit(Icon::AgentPill(a, n), String::new()),
-                });
+                // "text" (or the older "icon"): the ring and a short word; otherwise the ring alone.
+                let word = matches!(st.label.as_str(), "text" | "icon");
+                out.push(unit(Icon::AgentRing(a, v.tick % 8), if word { if n > 1 { format!("{} {n}", a.word()) } else { a.word().into() } } else { String::new() }));
             }
             "battery" if st.label == "inside" => {
                 if let Some(b) = s.battery {
@@ -349,8 +347,7 @@ fn icon_w(icon: Icon, h: f32) -> f32 {
         Icon::Disk => h * 1.15,
         Icon::Dot(_) => h * 0.7,
         Icon::BatteryIn(..) => h * 2.4,
-        Icon::AgentPill(..) => h * 4.0,
-        Icon::AgentIcon(_) => h,
+        Icon::AgentRing(..) => h * 1.15,
         _ => h,
     }
 }
@@ -371,9 +368,12 @@ fn symbol_name(icon: Icon) -> String {
         Icon::Disk => "internaldrive".into(),
         Icon::Tokens => "sparkle".into(),
         Icon::Clock => "clock".into(),
-        Icon::Dot(_) | Icon::BatteryIn(..) | Icon::AgentPill(..) => String::new(),
-        Icon::AgentIcon(a) => a.symbol().into(),
+        Icon::Dot(_) | Icon::BatteryIn(..) | Icon::AgentRing(..) => String::new(),
     }
+}
+
+fn dist2(px: f32, py: f32, (x, y): (f32, f32)) -> f32 {
+    ((px - x).powi(2) + (py - y).powi(2)).sqrt()
 }
 
 /// Icons stand as tall as the digits next to them.
@@ -443,8 +443,8 @@ impl Canvas<'_> {
         if let Icon::BatteryIn(level, charging) = icon {
             return self.battery_in_w(level, charging, h);
         }
-        if let Icon::AgentPill(a, n) = icon {
-            return self.pill_dims(a, n, h).0;
+        if let Icon::AgentRing(..) = icon {
+            return icon_w(icon, h).round();
         }
         match crate::symbols::symbol(&symbol_name(icon), h.round() as usize, self.weight) {
             Some(m) => m.w as f32,
@@ -457,11 +457,9 @@ impl Canvas<'_> {
         if let Icon::BatteryIn(level, charging) = icon {
             return self.battery_in(level, charging, x, bottom, h, rgb);
         }
-        if let Icon::AgentPill(a, n) = icon {
-            return self.pill(a, n, x, bottom, h);
+        if let Icon::AgentRing(a, phase) = icon {
+            return self.agent_ring(a, phase, x, bottom, h);
         }
-        // The agent symbol is drawn in its state's colour, whatever the label colour.
-        let rgb = if let Icon::AgentIcon(a) = icon { a.rgb() } else { rgb };
         if let Icon::Dot(own) = icon {
             let (r, cx, cy) = (h * 0.35, x + h * 0.35, bottom - h / 2.0);
             self.fill((cx - r, cy - r, cx + r, cy + r), own, |px, py| (px - cx).powi(2) + (py - cy).powi(2) <= r * r);
@@ -489,7 +487,7 @@ impl Canvas<'_> {
         let outline = |l: f32, tp: f32, r: f32, b: f32| move |px: f32, py: f32| rect(l, tp, r, b)(px, py) && !rect(l + t, tp + t, r - t, b - t)(px, py);
         let circle = |cx: f32, cy: f32, r: f32| move |px: f32, py: f32| (px - cx).powi(2) + (py - cy).powi(2) <= r * r;
         match icon {
-            Icon::Dot(_) | Icon::BatteryIn(..) | Icon::AgentPill(..) | Icon::AgentIcon(_) => {}
+            Icon::Dot(_) | Icon::BatteryIn(..) | Icon::AgentRing(..) => {}
             Icon::Battery(level, _) => {
                 let (bt, bb) = (top + h * 0.18, bottom - h * 0.12);
                 let body_r = x + w - h * 0.16;
@@ -643,18 +641,7 @@ impl Canvas<'_> {
         }
     }
 
-    /// Pill: total width, height, symbol size, text px and the text.
-    fn pill_dims(&self, a: Agent, n: u8, h: f32) -> (f32, f32, usize, f32, String) {
-        let ph = (h * 1.45).round().min(32.0);
-        let tpx = (ph * 0.62).round();
-        let text = if n > 1 { format!("{} {n}", a.word()) } else { a.word().to_string() };
-        let tw = crate::symbols::text(&text, tpx, "system", "semibold").map(|t| t.width).unwrap_or(tpx * 4.0);
-        let sym = (ph * 0.62).round() as usize;
-        let sw = crate::symbols::symbol(a.symbol(), sym, "bold").map(|m| m.w as f32).unwrap_or(sym as f32);
-        ((ph * 0.42 + sw + ph * 0.22 + tw + ph * 0.45).round(), ph, sym, tpx, text)
-    }
-
-    /// Alpha-blends a pixel over what's there (for white on a coloured capsule).
+    /// Alpha-blends a pixel over what's there (white marks on a coloured disc).
     fn blend(&mut self, x: i32, y: i32, cov: u8, rgb: [u8; 3]) {
         if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height || cov == 0 {
             return;
@@ -668,34 +655,72 @@ impl Canvas<'_> {
         self.rgba[i + 3] = (out * 255.0) as u8;
     }
 
-    /// Agent status pill: a capsule in the state's colour with a white symbol and word.
-    fn pill(&mut self, a: Agent, n: u8, x: f32, bottom: f32, h: f32) {
-        let (w, ph, sym, tpx, text) = self.pill_dims(a, n, h);
-        let cy = bottom - h / 2.0;
-        let (l, t, r, b) = (x.round(), (cy - ph / 2.0).round(), (x + w).round(), (cy + ph / 2.0).round());
-        let rad = ph / 2.0;
-        self.fill((l, t, r, b), a.rgb(), |px, py| {
-            let cx = px.clamp(l + rad, r - rad);
-            (px - cx).powi(2) + (py - (t + rad)).powi(2) <= rad * rad
-        });
-        let white = [255, 255, 255];
-        let mut pen = l + ph * 0.42;
-        if let Some(m) = crate::symbols::symbol(a.symbol(), sym, "bold") {
-            let oy = (cy - m.h as f32 / 2.0).round() as i32;
-            for rr in 0..m.h {
-                for cc in 0..m.w {
-                    self.blend(pen.round() as i32 + cc as i32, oy + rr as i32, m.alpha[rr * m.w + cc], white);
+    /// The agent status ring, `h` px high (a little taller than digits, so it reads at a glance).
+    fn agent_ring(&mut self, a: Agent, phase: u8, x: f32, bottom: f32, h: f32) {
+        let d = (h * 1.15).round();
+        let (cx, cy, r) = (x + d / 2.0, bottom - h / 2.0, d / 2.0);
+        let t = (d * 0.17).max(2.2);
+        let col = a.rgb();
+        let bx = (cx - r - 1.0, cy - r - 1.0, cx + r + 1.0, cy + r + 1.0);
+        let dist = move |px: f32, py: f32| ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+        match a {
+            Agent::Idle => self.fill(bx, col, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0),
+            Agent::Working => {
+                // A faint full ring, and a bright 3/4 arc whose gap turns a step each redraw.
+                let faint = [col[0], col[1], col[2]];
+                self.fill_alpha(bx, faint, 0.32, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0);
+                let start = phase as f32 * std::f32::consts::FRAC_PI_4;
+                self.fill(bx, col, |px, py| {
+                    let on_ring = (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0;
+                    let ang = ((py - cy).atan2(px - cx) - start).rem_euclid(std::f32::consts::TAU);
+                    on_ring && ang < std::f32::consts::TAU * 0.72
+                });
+            }
+            Agent::Waiting | Agent::Done => {
+                self.fill(bx, col, |px, py| dist(px, py) <= r);
+                // White mark: "!" or ✓, antialiased by supersampling.
+                let seg = |px: f32, py: f32, (x1, y1): (f32, f32), (x2, y2): (f32, f32)| {
+                    let (dx, dy) = (x2 - x1, y2 - y1);
+                    let k = (((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                    ((px - x1 - k * dx).powi(2) + (py - y1 - k * dy).powi(2)).sqrt()
+                };
+                let w = d * 0.13;
+                let p = |fx: f32, fy: f32| (cx - r + d * fx, cy - r + d * fy);
+                let mark: Box<dyn Fn(f32, f32) -> bool> = if a == Agent::Waiting {
+                    Box::new(move |px, py| seg(px, py, p(0.5, 0.24), p(0.5, 0.56)) <= w / 2.0 || dist2(px, py, p(0.5, 0.74)) <= w * 0.62)
+                } else {
+                    Box::new(move |px, py| seg(px, py, p(0.27, 0.52), p(0.43, 0.68)) <= w / 2.0 || seg(px, py, p(0.43, 0.68), p(0.74, 0.34)) <= w / 2.0)
+                };
+                for py in (bx.1.floor() as i32)..(bx.3.ceil() as i32) {
+                    for px in (bx.0.floor() as i32)..(bx.2.ceil() as i32) {
+                        let mut n = 0;
+                        for sy in 0..4 {
+                            for sx in 0..4 {
+                                if mark(px as f32 + (sx as f32 + 0.5) / 4.0, py as f32 + (sy as f32 + 0.5) / 4.0) {
+                                    n += 1;
+                                }
+                            }
+                        }
+                        self.blend(px, py, (n * 255 / 16) as u8, [255, 255, 255]);
+                    }
                 }
             }
-            pen += m.w as f32 + ph * 0.22;
         }
-        if let Some(tm) = crate::symbols::text(&text, tpx, "system", "semibold") {
-            let base = (cy + tpx * 0.36).round();
-            let (ox, oy) = (pen.round() as i32, (base - tm.baseline).round() as i32);
-            for rr in 0..tm.mask.h {
-                for cc in 0..tm.mask.w {
-                    self.blend(ox + cc as i32, oy + rr as i32, tm.mask.alpha[rr * tm.mask.w + cc], white);
+    }
+
+    /// Like `fill`, at a fraction of full opacity.
+    fn fill_alpha(&mut self, bx: (f32, f32, f32, f32), rgb: [u8; 3], a: f32, inside: impl Fn(f32, f32) -> bool) {
+        for py in (bx.1.floor() as i32)..(bx.3.ceil() as i32) {
+            for px in (bx.0.floor() as i32)..(bx.2.ceil() as i32) {
+                let mut n = 0;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        if inside(px as f32 + (sx as f32 + 0.5) / 4.0, py as f32 + (sy as f32 + 0.5) / 4.0) {
+                            n += 1;
+                        }
+                    }
                 }
+                self.put(px, py, ((n * 255 / 16) as f32 * a) as u8, rgb);
             }
         }
     }
@@ -703,7 +728,8 @@ impl Canvas<'_> {
     /// Width of a unit's label (text or icon) plus the space after it, or 0.
     fn label_w(&self, u: &Unit, lpx: f32, vpx: f32) -> f32 {
         match u.icon {
-            Some(i @ (Icon::BatteryIn(..) | Icon::AgentPill(..))) => self.icon_w(i, icon_h(vpx)),
+            Some(i @ Icon::BatteryIn(..)) => self.icon_w(i, icon_h(vpx)),
+            Some(i @ Icon::AgentRing(..)) if u.value.is_empty() => self.icon_w(i, icon_h(vpx)),
             Some(i @ Icon::Dot(_)) if u.value.is_empty() => self.icon_w(i, icon_h(vpx)),
             Some(i) => self.icon_w(i, icon_h(vpx)) + 4.0,
             None if !u.label.is_empty() => self.width(&u.label, lpx) + 3.0,
@@ -835,6 +861,7 @@ mod tests {
     pub fn values() -> Values {
         Values {
             agent: (Agent::Done, 1),
+            tick: 0,
             tokens: Some("151M".into()),
             stats: crate::stats::Stats { cpu: 23.4, mem_used: 6, mem_total: 10, disk_free: 212_000_000_000, net_down: 1_260_000.0, net_up: 48_000.0, battery: Some(82.0), charging: false, cpu_temp: Some(47.4), ..Default::default() },
             now: chrono::NaiveDate::from_ymd_opt(2026, 10, 4).unwrap().and_hms_opt(14, 5, 0).unwrap(),
@@ -1023,7 +1050,7 @@ mod preview {
             ("8-newyork", MenuBar { items: vec!["tokens".into(), "clock".into()], font: "newyork".into(), ..Default::default() }),
             ("9-futura-top", MenuBar { items: vec!["tokens".into(), "mem".into()], font: "futura".into(), layout: "top".into(), ..Default::default() }),
             ("91-agent-pill", MenuBar { items: vec!["agent".into(), "cpu".into()], ..Default::default() }),
-            ("92-agent-icon", MenuBar { items: vec!["agent".into(), "cpu".into()], styles: [("agent".to_string(), ItemStyle { label: "icon".into(), ..Default::default() })].into_iter().collect(), ..Default::default() }),
+            ("92-agent-text", MenuBar { items: vec!["agent".into(), "cpu".into()], styles: [("agent".to_string(), ItemStyle { label: "text".into(), ..Default::default() })].into_iter().collect(), ..Default::default() }),
             ("90-battery-inside", MenuBar { items: vec!["battery".into(), "clock".into()], styles: [("battery".to_string(), ItemStyle { label: "inside".into(), ..Default::default() })].into_iter().collect(), ..Default::default() }),
             ("6-battery-icon-clock-12h", MenuBar { items: vec!["battery".into(), "clock".into()], styles: icons(&["battery"]), clock: full, ..Default::default() }),
         ];

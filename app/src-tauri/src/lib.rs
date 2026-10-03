@@ -52,6 +52,10 @@ struct AppState {
     seen_sessions: Mutex<Option<activity::Seen>>,
     // Disk alert level already announced (0, 80 or 90), so each is announced once.
     disk_alerted: Mutex<u8>,
+    // While an agent is working the menu bar redraws 4 times a second (the ring turns); system
+    // counters are still read at most every 2 s.
+    animating: std::sync::atomic::AtomicBool,
+    last_sample: Mutex<Option<std::time::Instant>>,
 }
 
 impl AppState {
@@ -468,10 +472,17 @@ fn draw_menubar(app: &AppHandle) {
     let cfg = state.config.lock().unwrap().menubar.clone();
     let needs_stats = cfg.items.iter().any(|i| matches!(i.as_str(), "net" | "cpu" | "temp" | "mem" | "disk" | "battery"));
     let sessions = activity::read(&agent_dir().join("activity"));
+    let agent = activity::agent(&sessions, now_ms(), *state.activity_seen.lock().unwrap());
+    state.animating.store(agent.0 == menubar::Agent::Working && cfg.items.iter().any(|i| i == "agent"), std::sync::atomic::Ordering::Relaxed);
+    let fresh = state.last_sample.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_millis(1800));
     let values = menubar::Values {
-        agent: activity::agent(&sessions, now_ms(), *state.activity_seen.lock().unwrap()),
+        agent,
+        tick: ((now_ms() / 250) % 8) as u8,
         tokens: state.tokens_today.lock().unwrap().clone(),
-        stats: if needs_stats {
+        stats: if needs_stats && fresh {
+            state.last_stats.lock().unwrap().clone()
+        } else if needs_stats {
+            *state.last_sample.lock().unwrap() = Some(std::time::Instant::now());
             let mut sampler = state.sampler.lock().unwrap();
             let mut s = sampler.sample();
             if cfg.items.iter().any(|i| i == "temp") {
@@ -568,6 +579,7 @@ async fn menubar_preview(state: State<'_, AppState>, cfg: menubar::MenuBar) -> R
     let sessions = activity::read(&agent_dir().join("activity"));
     let values = menubar::Values {
         agent: activity::agent(&sessions, now_ms(), *state.activity_seen.lock().unwrap()),
+        tick: ((now_ms() / 250) % 8) as u8,
         tokens: state.tokens_today.lock().unwrap().clone().or(Some("151M".into())),
         stats,
         now: chrono::Local::now().naive_local(),
@@ -1239,6 +1251,8 @@ pub fn run() {
                 activity_seen: Mutex::new(now_ms()),
                 seen_sessions: Mutex::new(None),
                 disk_alerted: Mutex::new(0),
+                animating: std::sync::atomic::AtomicBool::new(false),
+                last_sample: Mutex::new(None),
             });
 
             let open = MenuItem::with_id(app, "dashboard", "Open DeviceTally", true, None::<&str>)?;
@@ -1309,7 +1323,8 @@ pub fn run() {
             });
             tauri::async_runtime::spawn(async move {
                 loop {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let fast = h2.state::<AppState>().animating.load(std::sync::atomic::Ordering::Relaxed);
+                    tokio::time::sleep(Duration::from_millis(if fast { 250 } else { 2000 })).await;
                     draw_menubar(&h2);
                 }
             });

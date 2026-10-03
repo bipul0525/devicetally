@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1
+
+- **Menu bar tab, like Stats:** a sidebar with icons and on/off switches on the left; the selected item's settings and the live preview on the right, at any window width.
+- **Agent status ring:** compact and recognisable at a glance: an orange ring that turns while an agent works, a red ! when it needs you, a green ✓ when it's done, grey when idle. Optional short word beside it. Replaces the pill.
+- The menu bar redraws 4 times a second only while an agent is working (the ring turns); system counters are still read every 2 s.
+
 ## 1.0.0
 
 The first stable release.

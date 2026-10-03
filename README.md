@@ -28,9 +28,9 @@ Claude Code in detail, plus Codex, OpenCode and Kimi · agent status and alerts 
 
 ## Know when your agent is done
 
-Start a task in Claude Code, switch to something else. The **Agent status** item in your menu bar turns **orange** while it works, **red** when it needs you (a permission or a question), and **green** when it's done, with an optional Mac notification and sound. It works in the terminal, in VS Code and in other editors. Codex too.
+Start a task in Claude Code, switch to something else. The **Agent status** ring in your menu bar turns while it works (**orange**), shows a red **!** when it needs you (a permission or a question), and a green **✓** when it's done, with an optional Mac notification and sound. It works in the terminal, in VS Code and in other editors. Codex too.
 
-<p align="center"><img src="docs/assets/agent-status.gif" alt="The Agent status pill changes from Working to Needs you to Done, with Mac notifications" width="760"></p>
+<p align="center"><img src="docs/assets/agent-status.gif" alt="The Agent status ring changes from working to needs you to done, with Mac notifications" width="760"></p>
 
 ## Features
 
@@ -96,7 +96,7 @@ Click the menu-bar item: tokens for today, 7 or 30 days, by tool and model (with
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/menubar-dark.png">
-    <img src="docs/assets/menubar-light.png" alt="A DeviceTally menu-bar item: Working pill, tokens, network, CPU, battery with 76 inside, clock" height="22">
+    <img src="docs/assets/menubar-light.png" alt="A DeviceTally menu-bar item: agent status ring, tokens, network, CPU, battery with 76 inside, clock" height="22">
   </picture>
   &nbsp;&nbsp;&nbsp;
   <picture>
