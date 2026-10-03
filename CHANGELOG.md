@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.3
+
+- Joining a computer just says "✓ <name> is connected. Monitoring is on."
+- DeviceTally is described as what it is: one menu-bar app for all your computers (AI coding usage, agent status, system monitor, storage, device health).
+
 ## 1.0.2
 
 - Joining a computer says what it tracks (e.g. "Tracking: Codex, OpenCode"), notes other AI tools found, and mentions Claude Code only as a note when no account is signed in. A computer without Claude Code is fully supported.

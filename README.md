@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/banner.png" alt="DeviceTally: Claude Code usage tracker and token monitor for all your computers, with a macOS menu bar app" width="100%">
+  <img src="docs/assets/banner.png" alt="DeviceTally: one menu-bar app for all your computers — AI coding usage, agent status, system stats and storage" width="100%">
 </p>
 
-<h1 align="center">DeviceTally: Claude Code usage tracker for all your computers</h1>
+<h1 align="center">DeviceTally: one menu-bar app for all your computers</h1>
 
 <p align="center">
   <a href="https://github.com/bipul0525/devicetally/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/bipul0525/devicetally?label=download&color=0a84ff"></a>
@@ -11,10 +11,18 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-lightgrey"></a>
 </p>
 
-<p align="center"><b>Track Claude Code token usage and cost across every Mac, Windows and Linux computer you use, in one small menu-bar app.</b><br>
-Claude Code in detail, plus Codex, OpenCode and Kimi · agent status and alerts · a menu bar you design · free and private on your own Cloudflare account.</p>
+<p align="center"><b>AI coding usage, agent status, system stats and storage — for every Mac, Windows and Linux computer you use.</b><br>
+Claude Code, Codex, OpenCode and Kimi usage · know when your agent is done · a menu bar you design · storage cleanup · free and private on your own Cloudflare account.</p>
 
-**DeviceTally** is a free, open-source, self-hosted **Claude Code usage tracker**. It adds up tokens and API-equivalent cost from Claude Code, OpenAI Codex, OpenCode and Kimi across all your computers, by model, project and device. It shows the totals in a **macOS menu bar app** (also on Windows and Linux) that tells you when your **AI coding agent** is working, needs you, or is done. Think of [ccusage](https://github.com/ryoppippi/ccusage) for every computer you own, plus a customizable menu-bar system monitor (CPU, memory, network, disk, battery), running on your own free Cloudflare Worker.
+**DeviceTally** is a free, open-source, self-hosted **menu-bar app for all your computers**:
+
+- **AI coding usage:** tokens and API-equivalent cost from Claude Code, OpenAI Codex, OpenCode and Kimi, by model, project and computer. Think of [ccusage](https://github.com/ryoppippi/ccusage) for every computer you own.
+- **Agent status:** know when your AI coding agent is working, needs you, or is done, with Mac notifications and sounds.
+- **System monitor:** CPU, temperature, memory, network, disk and battery in one menu-bar item you design.
+- **Storage:** see what AI models, developer caches and big folders use, and clear caches safely.
+- **Device health:** every computer's status, disk forecast and tracking at a glance.
+
+It runs on your own free Cloudflare Worker, so your data stays yours. More tools are on the way.
 
 <p align="center">
   <a href="#install">Install</a> ·
