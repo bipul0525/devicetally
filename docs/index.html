@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeviceTally: Claude Code usage tracker for all your computers (free, self-hosted)</title>
+<meta name="description" content="Track Claude Code, Codex and OpenCode token usage and cost across all your Mac, Windows and Linux computers. Free, open-source, self-hosted on your own Cloudflare account, with a macOS menu bar app that shows when your AI coding agent is done.">
+<meta name="keywords" content="Claude Code usage tracker, Claude Code token usage, ccusage, Codex usage, OpenCode, AI coding cost, LLM token tracker, menu bar app, macOS system monitor, self-hosted, Cloudflare Workers">
+<link rel="canonical" href="https://bipul0525.github.io/devicetally/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="DeviceTally: Claude Code usage tracker for all your computers">
+<meta property="og:description" content="Tokens and cost from Claude Code, Codex and OpenCode across every computer, in one menu-bar app. Free and self-hosted on Cloudflare.">
+<meta property="og:url" content="https://bipul0525.github.io/devicetally/">
+<meta property="og:image" content="https://bipul0525.github.io/devicetally/assets/social-preview.png">
+<meta property="og:image:width" content="1280"><meta property="og:image:height" content="640">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="DeviceTally: Claude Code usage tracker for all your computers">
+<meta name="twitter:description" content="Tokens and cost from Claude Code, Codex and OpenCode across every computer, in one menu-bar app. Free and self-hosted.">
+<meta name="twitter:image" content="https://bipul0525.github.io/devicetally/assets/social-preview.png">
+<link rel="icon" href="assets/icon.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "DeviceTally",
+  "description": "Self-hosted Claude Code usage tracker: tokens and cost from Claude Code, Codex, OpenCode and Kimi across all your computers, with a customizable menu bar app and agent status alerts.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Windows, Linux",
+  "softwareVersion": "1.0.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "url": "https://bipul0525.github.io/devicetally/",
+  "downloadUrl": "https://github.com/bipul0525/devicetally/releases/latest",
+  "codeRepository": "https://github.com/bipul0525/devicetally",
+  "image": "https://bipul0525.github.io/devicetally/assets/social-preview.png",
+  "screenshot": "https://bipul0525.github.io/devicetally/assets/overview-dark.png"
+}
+</script>
+<style>
+  :root { --bg: #0d1017; --card: #161b26; --line: #263044; --fg: #eef1f7; --muted: #9aa6bd; --accent: #4f8cff; --green: #30d158; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg: #f7f8fb; --card: #fff; --line: #e3e7ef; --fg: #121620; --muted: #5b6577; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  main { max-width: 1040px; margin: 0 auto; padding: 0 20px 64px; }
+  header { text-align: center; padding: 48px 0 24px; }
+  header img.logo { width: 72px; height: 72px; border-radius: 16px; }
+  h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.15; margin: 14px 0 12px; letter-spacing: -0.5px; }
+  .lead { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 760px; margin: 0 auto 24px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 11px 20px; border-radius: 10px; font-weight: 600; text-decoration: none; border: 1px solid var(--line); color: var(--fg); background: var(--card); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .hero { margin: 28px 0 8px; border-radius: 16px; overflow: hidden; border: 1px solid var(--line); }
+  .hero img, figure img { width: 100%; height: auto; display: block; }
+  h2 { font-size: 28px; margin: 56px 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 19px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+  figure { margin: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+  figcaption { font-size: 14px; color: var(--muted); padding: 8px 12px; background: var(--card); }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; }
+  pre { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto; font-size: 13.5px; }
+  footer { color: var(--muted); font-size: 14px; text-align: center; padding-top: 40px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img class="logo" src="assets/icon.png" alt="DeviceTally logo" width="72" height="72">
+    <h1>Claude Code usage tracker for all your computers</h1>
+    <p class="lead"><b>DeviceTally</b> adds up tokens and cost from <b>Claude Code, Codex, OpenCode and Kimi</b> across every Mac, Windows and Linux computer you use. It shows them in a menu bar app that also tells you when your AI coding agent is <b>done</b>. Free, open source, and self-hosted on your own Cloudflare account.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/bipul0525/devicetally/releases/latest">Download for macOS, Windows, Linux</a>
+      <a class="btn" href="https://github.com/bipul0525/devicetally">View on GitHub</a>
+    </div>
+    <div class="hero"><img src="assets/banner.png" alt="DeviceTally menu bar with agent status, token count and system stats, and the usage popover" width="1600" height="640"></div>
+  </header>
+
+  <h2>Know when your coding agent is done</h2>
+  <p>The Agent status item in your menu bar turns orange while Claude Code works, red when it needs your permission or answer, and green when the task is done, with an optional Mac notification and sound. It works in the terminal, VS Code and other editors, and with Codex.</p>
+  <figure><img src="assets/agent-status.gif" alt="Agent status pill changing from Working to Needs you to Done with Mac notifications" width="900" height="300" loading="lazy"><figcaption>Agent status and notifications</figcaption></figure>
+
+  <h2>Features</h2>
+  <div class="grid">
+    <div class="card"><h3>Token usage and cost, every computer</h3><p>Tokens and API-equivalent cost by tool, model, project and device, with a daily chart split by computer. Claude Code costs match ccusage.</p></div>
+    <div class="card"><h3>A menu bar you design</h3><p>Agent status, tokens today, network, CPU, temperature, memory, disk, battery (with the percentage inside) and clock. Per-item icons, layout, size, colour and 12 fonts.</p></div>
+    <div class="card"><h3>Device health</h3><p>Online, idle or offline; locked; tracking problems; disk with a "full in N weeks" forecast; the projects each computer is meant for.</p></div>
+    <div class="card"><h3>Storage</h3><p>What Ollama models, Hugging Face, Xcode, npm, Docker and other caches use, with Show in Finder and Move to Bin for caches.</p></div>
+    <div class="card"><h3>Private by design</h3><p>Your own Cloudflare Worker and D1 database on the free plan. Filtered and redacted on your computer before upload. Prompt text only if you turn it on.</p></div>
+    <div class="card"><h3>Never slows Claude Code</h3><p>Hooks only write locally (about 1 ms); uploads happen in the background, and nothing is lost offline.</p></div>
+  </div>
+
+  <h2>Screenshots</h2>
+  <div class="grid">
+    <figure><img src="assets/overview-dark.png" alt="Overview: Claude Code token usage by device, tool, model and project" loading="lazy"><figcaption>Overview across all computers</figcaption></figure>
+    <figure><img src="assets/menubar-tab-light.png" alt="Menu bar settings with live preview" loading="lazy"><figcaption>Design your menu bar</figcaption></figure>
+    <figure><img src="assets/devices-dark.png" alt="Device health: online status, lock, disk forecast" loading="lazy"><figcaption>Device health</figcaption></figure>
+    <figure><img src="assets/storage-dark.png" alt="Storage: AI model and developer cache sizes" loading="lazy"><figcaption>Storage</figcaption></figure>
+  </div>
+
+  <h2>How it compares</h2>
+  <table>
+    <tr><th></th><th>DeviceTally</th><th>ccusage</th><th>tokscale</th><th>Stats</th></tr>
+    <tr><td>Claude Code tokens and cost</td><td>✅</td><td>✅</td><td>✅</td><td>—</td></tr>
+    <tr><td>Codex, OpenCode, Kimi</td><td>✅</td><td>partly</td><td>✅</td><td>—</td></tr>
+    <tr><td>Several computers in one view</td><td>✅</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>Menu bar app</td><td>✅</td><td>—</td><td>—</td><td>✅</td></tr>
+    <tr><td>Agent status alerts</td><td>✅</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>System stats in the menu bar</td><td>✅</td><td>—</td><td>—</td><td>✅</td></tr>
+  </table>
+
+  <h2>Install</h2>
+  <p>Download the <code>.dmg</code> (Mac), <code>windows-setup.exe</code> or <code>.AppImage</code> from the <a href="https://github.com/bipul0525/devicetally/releases/latest">latest release</a>, or on Mac and Linux run:</p>
+  <pre>curl -fsSL https://raw.githubusercontent.com/bipul0525/devicetally/main/scripts/install-app.sh | sh</pre>
+  <p>Using Claude Code or Codex? The README has a <a href="https://github.com/bipul0525/devicetally#install-with-an-ai-agent">copy-ready install prompt</a> for your AI agent. Then open DeviceTally and choose <b>Set up DeviceTally</b>: it creates your free private server in your Cloudflare account in about 3 minutes.</p>
+
+  <footer>DeviceTally is MIT-licensed and independent; not affiliated with Anthropic, OpenAI or Cloudflare. <a href="https://github.com/bipul0525/devicetally">GitHub</a> · <a href="https://github.com/bipul0525/devicetally/blob/main/CHANGELOG.md">Changelog</a></footer>
+</main>
+</body>
+</html>

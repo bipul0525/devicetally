@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://bipul0525.github.io/devicetally/sitemap.xml
