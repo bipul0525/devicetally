@@ -1,0 +1,56 @@
+# Agent releases: one static binary per platform + checksums.txt (signed with cosign, keyless).
+# Asset names must match agent/internal/update.AssetName and the /i/<code> installers.
+version: 2
+project_name: devicetally
+builds:
+  - id: agent
+    dir: agent
+    main: ./cmd/devicetally
+    binary: devicetally
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.Version={{ .Version }}"]
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+archives:
+  - formats: [binary]
+    name_template: "devicetally_{{ .Os }}_{{ .Arch }}"
+checksum:
+  name_template: checksums.txt
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args: ["sign-blob", "--yes", "--output-signature=${signature}", "--output-certificate=${certificate}", "${artifact}"]
+    artifacts: checksum
+changelog:
+  use: github
+  sort: asc
+release:
+  # Shown at the top of every release page: most people install from here.
+  header: |
+    ## Install
+
+    | Your computer | Download |
+    |---|---|
+    | Mac with Apple Silicon (M1, M2, M3, M4…) | `DeviceTally_…_mac-apple-silicon.dmg` |
+    | Mac with Intel | `DeviceTally_…_mac-intel.dmg` |
+    | Windows | `DeviceTally_…_windows-setup.exe` (SmartScreen: **More info → Run anyway**) |
+    | Linux | `DeviceTally_…_amd64.AppImage` (any distribution) or `.deb` (Ubuntu, Debian) |
+
+    Not sure which Mac? Apple menu → **About This Mac**: "Chip Apple M…" is Apple Silicon, "Processor Intel" is Intel.
+
+    **macOS:** open the `.dmg`, drag **DeviceTally** into **Applications**, then paste this into Terminal and press Return:
+    ```sh
+    xattr -dr com.apple.quarantine /Applications/DeviceTally.app
+    ```
+    Without it, macOS says **"DeviceTally is damaged"**: the app isn't signed with a paid Apple certificate. It isn't damaged; the command only removes macOS's download mark. Or install with one command instead (Mac or Linux):
+    `curl -fsSL https://raw.githubusercontent.com/bipul0525/devicetally/main/scripts/install-app.sh | sh`
+
+    **Using an AI coding agent?** The README has a copy-ready install prompt: https://github.com/bipul0525/devicetally#install-with-an-ai-agent
+
+    The other files are used automatically (app updates, the background tracker and its checksums); you don't need to download them.
+
+    Then open DeviceTally and follow the screens. Guide: [README](https://github.com/bipul0525/devicetally#readme).
+  footer: |
+    What's new in each version: [CHANGELOG.md](https://github.com/bipul0525/devicetally/blob/main/CHANGELOG.md)

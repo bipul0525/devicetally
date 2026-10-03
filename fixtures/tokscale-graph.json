@@ -1,0 +1,9 @@
+{"meta":{"version":"4.17.0"},"summary":{},"years":[],"timeMetrics":{},
+ "contributions":[
+  {"date":"2026-10-01","totals":{},"intensity":0,"tokenBreakdown":{},"clients":[],"activeTimeMs":0},
+  {"date":"2026-10-02","totals":{},"intensity":2,"tokenBreakdown":{},"activeTimeMs":1000,"clients":[
+    {"client":"opencode","modelId":"big-pickle","providerId":"opencode","tokens":{"input":100,"output":20,"cacheRead":300,"cacheWrite":0,"reasoning":5},"cost":0,"messages":2},
+    {"client":"codex","modelId":"gpt-6.1-sol","providerId":"openai","tokens":{"input":2762,"output":14,"cacheRead":12160,"cacheWrite":0,"reasoning":0},"cost":0.00688,"messages":1,"futureField":true},
+    {"client":"kimi","modelId":"","providerId":"moonshot","tokens":{"input":1},"messages":1}
+  ]}
+ ]}

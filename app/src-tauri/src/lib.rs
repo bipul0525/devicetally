@@ -1,0 +1,1343 @@
+//! DeviceTally menu-bar / tray app (Milestone 12, docs/dev/PLAN-desktop.md).
+//! Shows token counts from your own DeviceTally server; never prompts. The owner session token is kept in
+//! a file only the user can read (see session_path), and "Add this device" runs the bundled Go agent.
+
+mod activity;
+mod lock;
+mod menubar;
+#[cfg(target_os = "macos")]
+mod notify;
+mod storage;
+#[cfg(target_os = "macos")]
+mod symbols;
+mod stats;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::Duration;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_positioner::{Position, WindowExt};
+
+const TRAY_ID: &str = "main";
+
+#[derive(Default, Serialize, Deserialize, Clone)]
+struct Config {
+    server: String,
+    #[serde(default)]
+    menubar: menubar::MenuBar,
+}
+
+struct AppState {
+    config: Mutex<Config>,
+    http: reqwest::Client,
+    // The session token, loaded from session.json at startup and kept in memory.
+    token: Mutex<Option<Option<String>>>,
+    // This machine's agent (server + device key), if it is connected. Without an admin login the app
+    // shows only this device, using the device key, so one machine never sees another's usage.
+    agent: Mutex<Option<(String, String)>>,
+    // Menu bar: system counters, today's tokens (refreshed every 5 min) and the last drawn image.
+    sampler: Mutex<stats::Sampler>,
+    // Latest reading, reused by the Settings preview so it never takes its own samples.
+    last_stats: Mutex<stats::Stats>,
+    tokens_today: Mutex<Option<String>>,
+    last_icon: Mutex<Vec<u8>>,
+    // Claude Code status dot: when the popover was last opened (clears "done"), and the last dot
+    // (a change to done or waiting can play a sound).
+    activity_seen: Mutex<i64>,
+    // Each session's last state, to alert once per change (None until the first look).
+    seen_sessions: Mutex<Option<activity::Seen>>,
+    // Disk alert level already announced (0, 80 or 90), so each is announced once.
+    disk_alerted: Mutex<u8>,
+}
+
+impl AppState {
+    fn token(&self, _server: &str) -> Option<String> {
+        self.token.lock().unwrap().clone().flatten()
+    }
+    fn set_token(&self, v: Option<String>) {
+        *self.token.lock().unwrap() = Some(v);
+    }
+}
+
+fn config_path(app: &AppHandle) -> PathBuf {
+    app.path().app_config_dir().unwrap_or_default().join("config.json")
+}
+
+fn load_config(app: &AppHandle) -> Config {
+    std::fs::read(config_path(app)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn save_config(app: &AppHandle, c: &Config) -> Result<(), String> {
+    let p = config_path(app);
+    std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(p, serde_json::to_vec_pretty(c).unwrap()).map_err(|e| e.to_string())
+}
+
+// Why not the OS keychain: without a paid Apple Developer ID the app is ad-hoc signed, so macOS
+// can't remember "Always Allow" and asks for the login password again and again (seen 2026-10-03).
+// The token lives in the app's config folder with owner-only permissions (0600) instead.
+fn session_path(app: &AppHandle) -> PathBuf {
+    app.path().app_config_dir().unwrap_or_default().join("session.json")
+}
+
+/// All saved admin logins: server -> session token. Reads the older single-login format too.
+fn read_sessions(app: &AppHandle) -> serde_json::Map<String, Value> {
+    let Some(v) = std::fs::read(session_path(app)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { return Default::default() };
+    if let Some(m) = v["sessions"].as_object() {
+        return m.clone();
+    }
+    match (v["server"].as_str(), v["token"].as_str()) {
+        (Some(s), Some(t)) => [(s.to_string(), Value::String(t.to_string()))].into_iter().collect(),
+        _ => Default::default(),
+    }
+}
+
+fn read_session(app: &AppHandle, server: &str) -> Option<String> {
+    read_sessions(app).get(server)?.as_str().map(String::from)
+}
+
+fn write_session(app: &AppHandle, server: &str, token: Option<&str>) -> Result<(), String> {
+    let mut all = read_sessions(app);
+    match token {
+        Some(t) => all.insert(server.to_string(), Value::String(t.to_string())),
+        None => all.remove(server),
+    };
+    let p = session_path(app);
+    std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
+    let body = serde_json::to_vec(&serde_json::json!({ "sessions": all })).unwrap();
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    use std::io::Write;
+    opts.open(&p).and_then(|mut f| f.write_all(&body)).map_err(|e| e.to_string())
+}
+
+/// Saved admin servers and the current one (Settings → Servers).
+#[tauri::command]
+fn servers(app: AppHandle, state: State<'_, AppState>) -> Value {
+    serde_json::json!({ "current": state.config.lock().unwrap().server, "saved": read_sessions(&app).keys().collect::<Vec<_>>() })
+}
+
+#[tauri::command]
+async fn switch_server(app: AppHandle, state: State<'_, AppState>, server: String) -> Result<(), String> {
+    let token = read_session(&app, &server).ok_or("Not signed in to that server.")?;
+    let cfg = Config { server, ..state.config.lock().unwrap().clone() };
+    save_config(&app, &cfg)?;
+    *state.config.lock().unwrap() = cfg;
+    state.set_token(Some(token));
+    refresh_tray(&app).await;
+    Ok(())
+}
+
+/// Menu-bar form: at most 3 significant characters, rounded (owner: "a lump sum, very small space").
+/// 150_660_000 -> "151M", 1_726_320 -> "1.7M", 12_400 -> "12K", 950 -> "950".
+fn fmt_short(n: f64) -> String {
+    let (v, unit) = if n >= 1e9 { (n / 1e9, "B") } else if n >= 1e6 { (n / 1e6, "M") } else if n >= 1e3 { (n / 1e3, "K") } else { (n, "") };
+    if unit.is_empty() || v >= 10.0 || (v * 10.0).round() / 10.0 == v.round() {
+        format!("{}{unit}", v.round() as u64)
+    } else {
+        format!("{:.1}{unit}", v)
+    }
+}
+
+
+/// Admin signed in: every device. Otherwise this machine's own usage via its device key.
+async fn get_summary(state: &AppState, range: &str) -> Result<Value, String> {
+    let server = state.config.lock().unwrap().server.clone();
+    let admin = (!server.is_empty()).then(|| state.token(&server)).flatten();
+    let agent = state.agent.lock().unwrap().clone();
+    let req = match (admin, agent) {
+        (Some(token), _) => state.http.get(format!("{server}/api/summary?range={range}")).header("cookie", format!("dt_session={token}")),
+        (None, Some((agent_server, key))) => state.http.get(format!("{agent_server}/api/v1/summary?range={range}")).bearer_auth(key),
+        (None, None) => return Err("not_set_up".into()),
+    };
+    let admin_mode = state.token(&server).is_some();
+    let res = req.send().await.map_err(|_| "offline".to_string())?;
+    if res.status() == 401 {
+        if admin_mode {
+            state.set_token(None);
+            return Err("signed_out".into());
+        }
+        return Err("device_revoked".into());
+    }
+    if !res.status().is_success() {
+        return Err(format!("server_{}", res.status().as_u16()));
+    }
+    res.json().await.map_err(|e| e.to_string())
+}
+
+/// Menu-bar text (macOS) and tooltip (all platforms): today's tokens.
+/// Refreshes today's tokens (every 5 minutes and after sign-in/connect), then redraws the menu bar.
+async fn refresh_tray(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let tokens = get_summary(&state, "today").await.ok().map(|s| fmt_short(s["tokens"].as_f64().unwrap_or(0.0)));
+    *state.tokens_today.lock().unwrap() = tokens;
+    draw_menubar(app);
+}
+
+/// Shows a banner and/or plays a sound for an alert, as configured. With a banner the sound plays
+/// as part of it, so macOS Focus / Do Not Disturb silences both.
+fn give_alert(app: &AppHandle, cfg: &menubar::Alerts, a: &activity::Alert) {
+    let banner = if a.waiting { cfg.wait_banner } else { cfg.done_banner };
+    let sound = cfg.sound(a.waiting);
+    if banner {
+        notify_user(app, &a.title, &a.body, sound);
+    } else if let Some(s) = sound {
+        play_sound(s);
+    }
+}
+
+/// A system notification. macOS: DeviceTally's own sender (shows even while DeviceTally is in front);
+/// elsewhere the notification plugin.
+fn notify_user(app: &AppHandle, title: &str, body: &str, sound: Option<&str>) {
+    #[cfg(target_os = "macos")]
+    {
+        let (t, b, s) = (title.to_string(), body.to_string(), sound.map(String::from));
+        let _ = app.run_on_main_thread(move || {
+            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                notify::show(mtm, &t, &b, s.as_deref());
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        let mut n = app.notification().builder().title(title).body(body);
+        if let Some(s) = sound {
+            n = n.sound(s);
+        }
+        let _ = n.show();
+    }
+}
+
+/// A notification when the disk passes 80% and 90% full (once each, until it drops back).
+fn disk_check(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let cfg = state.config.lock().unwrap().menubar.alerts.clone();
+    let s = state.sampler.lock().unwrap().sample();
+    if s.disk_total == 0 {
+        return;
+    }
+    let level = storage::alert_level(1.0 - s.disk_free as f64 / s.disk_total as f64);
+    let mut done = state.disk_alerted.lock().unwrap();
+    if cfg.disk && level > *done {
+        notify_user(app, &format!("Disk {level}% full"), &format!("{} free. Open DeviceTally → Storage to see what's using space.", stats::bytes(s.disk_free)), cfg.sound(true));
+    }
+    *done = level;
+}
+
+/// Storage on this computer (read-only), for the Storage tab.
+#[tauri::command]
+async fn storage_scan() -> Result<Vec<storage::Item>, String> {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    tokio::task::spawn_blocking(move || storage::scan(&home)).await.map_err(|e| e.to_string())
+}
+
+/// Moves a cache folder to the Bin (recoverable until the Bin is emptied). Only what
+/// storage::may_trash allows; the UI asks for confirmation first.
+#[tauri::command]
+async fn trash_path(path: String) -> Result<(), String> {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let p = PathBuf::from(&path);
+    if !storage::may_trash(&home, &p) || !p.exists() {
+        return Err("This folder can't be moved to the Bin from DeviceTally. Use Show in Finder.".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSFileManager, NSString, NSURL};
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&path));
+        NSFileManager::defaultManager().trashItemAtURL_resultingItemURL_error(&url, None).map_err(|e| e.localizedDescription().to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = p;
+        Err("Moving to the Bin is available on macOS for now.".into())
+    }
+}
+
+/// Shows a file or folder in Finder (Explorer on Windows). Only paths inside the home folder.
+#[tauri::command]
+async fn reveal_path(path: String) -> Result<(), String> {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let p = PathBuf::from(&path);
+    if !p.starts_with(&home) || path.contains("..") || !p.exists() {
+        return Err("not_found".into());
+    }
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg("-R").arg(&p).spawn();
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer").arg(format!("/select,{}", p.display())).spawn();
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
+    let r = std::process::Command::new("xdg-open").arg(p.parent().unwrap_or(&p)).spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Settings → Agent status: try the current alerts.
+#[tauri::command]
+async fn test_alert(app: AppHandle, state: State<'_, AppState>, waiting: bool) -> Result<(), String> {
+    let cfg = state.config.lock().unwrap().menubar.alerts.clone();
+    let a = if waiting {
+        activity::Alert { waiting: true, title: "Claude Code needs you".into(), body: "devicetally · a permission or a question (test)".into() }
+    } else {
+        activity::Alert { waiting: false, title: "Claude Code finished".into(), body: "devicetally · took 3 min (test)".into() }
+    };
+    give_alert(&app, &cfg, &a);
+    Ok(())
+}
+
+/// Folders macOS looks in for alert sounds, the user's own first (same order as notifications use).
+fn sound_dirs() -> Vec<PathBuf> {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    vec![home.join("Library/Sounds"), PathBuf::from("/Library/Sounds"), PathBuf::from("/System/Library/Sounds")]
+}
+
+/// Every alert sound on this Mac: the system's and any the user added to ~/Library/Sounds.
+#[tauri::command]
+async fn list_sounds() -> Result<Vec<String>, String> {
+    let mut names: Vec<String> = vec![];
+    for dir in sound_dirs() {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| ["aiff", "aif", "wav", "caf", "m4a", "mp3"].contains(&x.to_string_lossy().to_lowercase().as_str())) {
+                if let Some(n) = p.file_stem().map(|n| n.to_string_lossy().into_owned()) {
+                    if !names.contains(&n) {
+                        names.push(n);
+                    }
+                }
+            }
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[tauri::command]
+async fn preview_sound(name: String) -> Result<(), String> {
+    if !name.is_empty() && !name.contains('/') && !name.contains("..") {
+        play_sound(&name);
+    }
+    Ok(())
+}
+
+/// An alert sound by name (macOS), from the user's or the system's sound folders, without blocking.
+fn play_sound(name: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let file = sound_dirs().into_iter().flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten()).map(|e| e.path()).find(|p| p.file_stem().is_some_and(|n| n == name));
+        if let Some(f) = file {
+            let _ = std::process::Command::new("afplay").arg(f).spawn();
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = name;
+}
+
+/// Tells the server this computer is up (its config request records "last seen"), so the admin can
+/// tell an idle computer from a disconnected one even when Claude Code isn't in use.
+async fn heartbeat(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let agent = state.agent.lock().unwrap().clone();
+    let Some((server, key)) = agent else { return };
+    // What the tracker last wrote (hooks, removed transcripts, other settings folders), plus whether
+    // tracking is paused, whether this computer is locked, and its disk.
+    let dir = agent_dir();
+    let mut health: Value = std::fs::read(dir.join("health.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::json!({}));
+    let paused = std::fs::read(dir.join("state.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).is_some_and(|v| v["paused"] == true);
+    let disk = state.sampler.lock().unwrap().sample();
+    if let Some(h) = health.as_object_mut() {
+        h.insert("paused".into(), paused.into());
+        h.insert("locked".into(), lock::is_locked().into());
+        h.insert("disk_free".into(), disk.disk_free.into());
+        h.insert("disk_total".into(), disk.disk_total.into());
+        h.insert("app".into(), env!("CARGO_PKG_VERSION").into());
+        h.insert("os".into(), std::env::consts::OS.into());
+    }
+    let res = state.http.post(format!("{server}/api/v1/health")).bearer_auth(&key).json(&health).send().await;
+    // Servers before 0.10 have no /health; their config request still records "last seen".
+    if res.map(|r| r.status().as_u16() == 404).unwrap_or(false) {
+        let _ = state.http.get(format!("{server}/api/v1/config")).bearer_auth(key).send().await;
+    }
+}
+
+/// Settings → Lock this computer: is it locked?
+#[tauri::command]
+async fn lock_status() -> Result<Value, String> {
+    let locked = lock::is_locked();
+    // The system copy only changes when relocking; after an app update it may be older.
+    let bundled = std::env::current_exe().ok().map(|e| e.with_file_name("devicetally")).and_then(|p| std::fs::read(p).ok());
+    let outdated = locked && bundled.is_some_and(|b| std::fs::read(lock::BIN).ok().is_some_and(|s| s != b));
+    Ok(serde_json::json!({ "locked": locked, "outdated": outdated, "supported": cfg!(target_os = "macos") }))
+}
+
+/// Locks this computer (admin, macOS): the tracker into a system folder and DeviceTally's hooks into
+/// Claude Code's system-wide settings. macOS asks for an administrator's password.
+#[tauri::command]
+async fn lock_computer(app: AppHandle, state: State<'_, AppState>, only_ours: bool, block_skip: bool) -> Result<(), String> {
+    let server = state.config.lock().unwrap().server.clone();
+    if state.token(&server).is_none() {
+        return Err("Sign in as admin first.".into());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, only_ours, block_skip);
+        return Err("Locking is available on macOS for now.".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let agent = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("devicetally");
+        let existing = std::fs::read_to_string(lock::MANAGED).unwrap_or_default();
+        let merged = lock::with_hooks(&existing, only_ours, block_skip)?;
+        let tmp = app.path().app_data_dir().map_err(|e| e.to_string())?.join("managed-settings.json");
+        std::fs::create_dir_all(tmp.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(&tmp, merged).map_err(|e| e.to_string())?;
+        let (bin_dir, bin, managed) = (lock::sh(lock::BIN_DIR), lock::sh(lock::BIN), lock::sh(lock::MANAGED));
+        let script = format!(
+            "set -e; mkdir -p {bin_dir} '/Library/Application Support/ClaudeCode'; cp {src} {bin}; chown root:wheel {bin}; chmod 755 {bin}; \
+             if [ -f {managed} ]; then cp {managed} {managed}.devicetally-backup; fi; cp {tmp} {managed}; chown root:wheel {managed}; chmod 644 {managed}",
+            src = lock::sh(&agent.to_string_lossy()),
+            tmp = lock::sh(&tmp.to_string_lossy()),
+        );
+        let r = lock::as_admin(&script, "DeviceTally wants to lock tracking on this Mac, so it can't be turned off without an administrator.");
+        let _ = std::fs::remove_file(&tmp);
+        r?;
+        // The tracker drops its user-level hooks at its next sync (they'd run twice).
+        let _ = std::process::Command::new(lock::BIN).arg("sync").spawn();
+        heartbeat(&app).await;
+        Ok(())
+    }
+}
+
+/// Unlocks (admin, macOS): removes DeviceTally's hooks from the system-wide settings and the
+/// system copy of the tracker; the tracker puts its user-level hooks back at the next sync.
+#[tauri::command]
+async fn unlock_computer(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let server = state.config.lock().unwrap().server.clone();
+    if state.token(&server).is_none() {
+        return Err("Sign in as admin first.".into());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        return Err("Locking is available on macOS for now.".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let existing = std::fs::read_to_string(lock::MANAGED).unwrap_or_default();
+        let cleaned = if existing.trim().is_empty() { "{}".to_string() } else { lock::without_hooks(&existing)? };
+        let tmp = app.path().app_data_dir().map_err(|e| e.to_string())?.join("managed-settings.json");
+        std::fs::write(&tmp, cleaned).map_err(|e| e.to_string())?;
+        let script = format!("set -e; if [ -f {m} ]; then cp {t} {m}; chown root:wheel {m}; chmod 644 {m}; fi; rm -f {b}", m = lock::sh(lock::MANAGED), t = lock::sh(&tmp.to_string_lossy()), b = lock::sh(lock::BIN));
+        let r = lock::as_admin(&script, "DeviceTally wants to unlock tracking on this Mac.");
+        let _ = std::fs::remove_file(&tmp);
+        r?;
+        let agent = agent_dir().join("bin").join("devicetally");
+        let _ = std::process::Command::new(agent).arg("sync").spawn();
+        heartbeat(&app).await;
+        Ok(())
+    }
+}
+
+/// macOS dark mode, checked at most every 10 s (only needed for coloured menu-bar items).
+#[cfg(target_os = "macos")]
+fn dark_mode() -> bool {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    static DARK: AtomicBool = AtomicBool::new(false);
+    static CHECKED: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    if now.saturating_sub(CHECKED.load(Ordering::Relaxed)) >= 10 {
+        CHECKED.store(now, Ordering::Relaxed);
+        let out = std::process::Command::new("defaults").args(["read", "-g", "AppleInterfaceStyle"]).output();
+        DARK.store(out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("Dark")), Ordering::Relaxed);
+    }
+    DARK.load(Ordering::Relaxed)
+}
+
+/// Draws the user's menu-bar item (every 2 s). System counters are read only if an item needs them,
+/// and the icon is replaced only when it changed.
+fn draw_menubar(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
+    let cfg = state.config.lock().unwrap().menubar.clone();
+    let needs_stats = cfg.items.iter().any(|i| matches!(i.as_str(), "net" | "cpu" | "temp" | "mem" | "disk" | "battery"));
+    let sessions = activity::read(&agent_dir().join("activity"));
+    let values = menubar::Values {
+        agent: activity::agent(&sessions, now_ms(), *state.activity_seen.lock().unwrap()),
+        tokens: state.tokens_today.lock().unwrap().clone(),
+        stats: if needs_stats {
+            let mut sampler = state.sampler.lock().unwrap();
+            let mut s = sampler.sample();
+            if cfg.items.iter().any(|i| i == "temp") {
+                s.cpu_temp = sampler.cpu_temp();
+            }
+            *state.last_stats.lock().unwrap() = s.clone();
+            s
+        } else {
+            Default::default()
+        },
+        now: chrono::Local::now().naive_local(),
+    };
+    let mut units = menubar::units(&cfg, &values);
+    // Claude Code status dot, first in the item: orange working, red needs you, green done.
+    // The older "status dot" setting, until it's replaced by the Agent status item.
+    let dot = if cfg.status_dot && !cfg.items.iter().any(|i| i == "agent") { activity::dot(&sessions, now_ms(), *state.activity_seen.lock().unwrap()) } else { None };
+    // Banners and sounds: once per session change.
+    let fired = {
+        let mut seen = state.seen_sessions.lock().unwrap();
+        let first = seen.is_none();
+        activity::alerts(seen.get_or_insert_with(Default::default), first, &sessions, now_ms(), cfg.alerts.min_seconds as i64 * 1000)
+    };
+    for a in fired {
+        give_alert(app, &cfg.alerts, &a);
+    }
+    if let Some(d) = dot {
+        units.insert(0, menubar::status_unit(d.rgb()));
+    }
+    let _ = tray.set_tooltip(Some(if units.is_empty() { "DeviceTally".to_string() } else { format!("DeviceTally: {}", menubar::text(&units)) }));
+    #[cfg(target_os = "macos")]
+    {
+        let mut last = state.last_icon.lock().unwrap();
+        // Template images are tinted by macOS; a coloured image needs a text colour for the items
+        // without their own colour: white in dark mode, black in light mode.
+        let colored = cfg.colored() || dot.is_some() || units.iter().any(|u| u.color.is_some());
+        let fg = if colored && dark_mode() { [255, 255, 255] } else { [0, 0, 0] };
+        match menubar::render_fit(&cfg, &units, fg).0 {
+            Some((rgba, w, h)) => {
+                if *last != rgba {
+                    let _ = tray.set_icon(Some(tauri::image::Image::new_owned(rgba.clone(), w, h)));
+                    let _ = tray.set_icon_as_template(!colored);
+                    let _ = tray.set_title(None::<&str>);
+                    *last = rgba;
+                }
+            }
+            None => {
+                if !last.is_empty() {
+                    if let Ok(img) = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
+                        let _ = tray.set_icon(Some(img));
+                    }
+                    last.clear();
+                }
+            }
+        }
+    }
+}
+
+// Menu-bar commands are async so Tauri runs them off the main (window) thread.
+#[tauri::command]
+async fn get_menubar(state: State<'_, AppState>) -> Result<menubar::MenuBar, String> {
+    Ok(state.config.lock().unwrap().menubar.clone())
+}
+
+#[tauri::command]
+async fn set_menubar(app: AppHandle, state: State<'_, AppState>, cfg: menubar::MenuBar) -> Result<(), String> {
+    let mut c = state.config.lock().unwrap().clone();
+    c.menubar = cfg;
+    save_config(&app, &c)?;
+    *state.config.lock().unwrap() = c;
+    draw_menubar(&app);
+    Ok(())
+}
+
+/// While a slider is dragged: shows the configuration in the real menu bar without saving it
+/// (set_menubar saves when it's let go).
+#[tauri::command]
+async fn set_menubar_live(app: AppHandle, state: State<'_, AppState>, cfg: menubar::MenuBar) -> Result<(), String> {
+    state.config.lock().unwrap().menubar = cfg;
+    draw_menubar(&app);
+    Ok(())
+}
+
+/// What a configuration would look like, for the live preview in Settings: RGBA pixels at 2x.
+#[tauri::command]
+async fn menubar_preview(state: State<'_, AppState>, cfg: menubar::MenuBar) -> Result<Value, String> {
+    // Uses the latest reading; a fresh sample per preview made the numbers jump and cost CPU.
+    let mut stats = {
+        let last = state.last_stats.lock().unwrap().clone();
+        if last.mem_total > 0 { last } else { state.sampler.lock().unwrap().sample() }
+    };
+    if cfg.items.iter().any(|i| i == "temp") && stats.cpu_temp.is_none() {
+        stats.cpu_temp = state.sampler.lock().unwrap().cpu_temp();
+    }
+    let sessions = activity::read(&agent_dir().join("activity"));
+    let values = menubar::Values {
+        agent: activity::agent(&sessions, now_ms(), *state.activity_seen.lock().unwrap()),
+        tokens: state.tokens_today.lock().unwrap().clone().or(Some("151M".into())),
+        stats,
+        now: chrono::Local::now().naive_local(),
+    };
+    let units = menubar::units(&cfg, &values);
+    // As it looks on a light and on a dark menu bar.
+    #[cfg(target_os = "macos")]
+    if let ((Some((light, w, h)), hidden), (Some((dark, _, _)), _)) = (menubar::render_fit(&cfg, &units, [0, 0, 0]), menubar::render_fit(&cfg, &units, [255, 255, 255])) {
+        // Base64, not a JSON array of numbers: ~4x smaller and fast to decode, so sliders stay smooth.
+        use base64::Engine;
+        let b64 = |v: Vec<u8>| base64::engine::general_purpose::STANDARD.encode(v);
+        return Ok(serde_json::json!({ "width": w, "height": h, "light": b64(light), "dark": b64(dark), "hidden": hidden, "text": menubar::text(&units) }));
+    }
+    Ok(serde_json::json!({ "width": 0, "height": 0, "text": menubar::text(&units) }))
+}
+
+/// This computer right now (popover strip), sampled on demand while it is open.
+#[tauri::command]
+async fn system_stats(state: State<'_, AppState>) -> Result<stats::Stats, String> {
+    let mut sampler = state.sampler.lock().unwrap();
+    let mut s = sampler.sample();
+    s.cpu_temp = sampler.cpu_temp();
+    *state.last_stats.lock().unwrap() = s.clone();
+    Ok(s)
+}
+
+#[derive(Serialize)]
+struct AppStatus {
+    server: String,
+    signed_in: bool,
+    this_device_connected: bool,
+    agent_server: String,
+}
+
+/// This machine's enrolled agent: (server, device key) from its state file.
+fn agent_dir() -> PathBuf {
+    std::env::var("DEVICETALLY_HOME").map(PathBuf::from).unwrap_or_else(|_| {
+        if cfg!(windows) {
+            PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default()).join("devicetally")
+        } else {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".devicetally")
+        }
+    })
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// Claude Code's sessions on this computer, as the agent's hooks recorded them.
+#[tauri::command]
+async fn activity() -> Result<Vec<activity::Session>, String> {
+    let mut s = activity::read(&agent_dir().join("activity"));
+    s.sort_by(|a, b| b.since.cmp(&a.since));
+    Ok(s)
+}
+
+fn read_agent() -> Option<(String, String)> {
+    let dir = agent_dir();
+    let v: Value = serde_json::from_slice(&std::fs::read(dir.join("state.json")).ok()?).ok()?;
+    let (server, key) = (v["server"].as_str()?.to_string(), v["device_key"].as_str()?.to_string());
+    (!server.is_empty() && !key.is_empty()).then_some((server, key))
+}
+
+#[tauri::command]
+fn status(state: State<'_, AppState>) -> AppStatus {
+    let server = state.config.lock().unwrap().server.clone();
+    let agent = read_agent();
+    *state.agent.lock().unwrap() = agent.clone();
+    AppStatus {
+        signed_in: !server.is_empty() && state.token(&server).is_some(),
+        this_device_connected: agent.is_some(),
+        agent_server: agent.map(|a| a.0).unwrap_or_default(),
+        server,
+    }
+}
+
+#[tauri::command]
+async fn sign_in(app: AppHandle, state: State<'_, AppState>, server: String, email: String, password: String) -> Result<(), String> {
+    let server = server.trim().trim_end_matches('/').to_string();
+    let server = if server.starts_with("http") { server } else { format!("https://{server}") };
+    let res = state
+        .http
+        .post(format!("{server}/api/auth/login"))
+        .json(&serde_json::json!({ "email": email, "password": password }))
+        .send()
+        .await
+        .map_err(|_| "Could not reach that server. Check the address.".to_string())?;
+    match res.status().as_u16() {
+        200 => {}
+        401 => return Err("Email or password is not right.".into()),
+        429 => return Err("Too many wrong attempts. Wait a few minutes.".into()),
+        409 => return Err("This server has no admin login yet. Tick \"First time on this server\" and enter its setup token.".into()),
+        s => return Err(format!("The server answered {s}.")),
+    }
+    // The login sets an HttpOnly session cookie; the app keeps that token in session.json (owner-only).
+    let token = res
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find_map(|c| c.strip_prefix("dt_session=").map(|rest| rest.split(';').next().unwrap_or("").to_string()))
+        .filter(|t| !t.is_empty())
+        .ok_or("The server did not start a session.")?;
+    write_session(&app, &server, Some(&token))?;
+    state.set_token(Some(token));
+    let cfg = Config { server, ..state.config.lock().unwrap().clone() };
+    save_config(&app, &cfg)?;
+    *state.config.lock().unwrap() = cfg;
+    refresh_tray(&app).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn sign_out(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let server = state.config.lock().unwrap().server.clone();
+    if let Some(token) = state.token(&server) {
+        let _ = state.http.post(format!("{server}/api/auth/logout")).header("cookie", format!("dt_session={token}")).send().await;
+    }
+    let _ = write_session(&app, &server, None);
+    state.set_token(None);
+    // Another saved server? Switch to it instead of leaving the app signed out.
+    if let Some(next) = read_sessions(&app).keys().next().cloned() {
+        let cfg = Config { server: next.clone(), ..state.config.lock().unwrap().clone() };
+        let _ = save_config(&app, &cfg);
+        *state.config.lock().unwrap() = cfg;
+        state.set_token(read_session(&app, &next));
+    }
+    refresh_tray(&app).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn summary(state: State<'_, AppState>, range: String) -> Result<Value, String> {
+    let range = match range.as_str() {
+        "7d" | "30d" => range,
+        _ => "today".to_string(),
+    };
+    get_summary(&state, &range).await
+}
+
+/// Creates a one-time code with the owner session and runs the bundled agent's `enroll` with it.
+#[tauri::command]
+async fn add_this_device(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let server = state.config.lock().unwrap().server.clone();
+    let token = state.token(&server).ok_or("Sign in first.")?;
+    let res = state
+        .http
+        .post(format!("{server}/api/devices/enroll"))
+        .header("cookie", format!("dt_session={token}"))
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .map_err(|_| "Could not reach your server.".to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("Could not create a code ({}).", res.status().as_u16()));
+    }
+    let code = res.json::<Value>().await.map_err(|e| e.to_string())?["code"].as_str().unwrap_or("").to_string();
+    run_enroll(&state, server, code).await
+}
+
+/// Connects this machine with a code from the admin (Devices → Add device): no admin login needed.
+#[tauri::command]
+async fn connect_with_code(app: AppHandle, state: State<'_, AppState>, server: String, code: String) -> Result<String, String> {
+    let server = server.trim().trim_end_matches('/').to_string();
+    let server = if server.starts_with("http") { server } else { format!("https://{server}") };
+    let out = run_enroll(&state, server, code.trim().to_uppercase()).await?;
+    refresh_tray(&app).await;
+    Ok(out)
+}
+
+/// Stops tracking on this computer: the agent removes its hooks (restoring Claude's settings) and its data.
+#[tauri::command]
+async fn disconnect_this_computer(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // A joined computer can't remove itself while the server still tracks it: it asks the admin
+    // (Settings → Request to disconnect), and once approved its key stops working.
+    let server = state.config.lock().unwrap().server.clone();
+    let admin = !server.is_empty() && state.token(&server).is_some();
+    if !admin {
+        let agent = state.agent.lock().unwrap().clone();
+        if let Some((agent_server, key)) = agent {
+            if let Ok(r) = state.http.get(format!("{agent_server}/api/v1/config")).bearer_auth(key).send().await {
+                if r.status().is_success() {
+                    return Err("needs_admin_approval".into());
+                }
+            }
+        }
+    }
+    uninstall_agent(&app, &state).await
+}
+
+async fn uninstall_agent(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    let agent = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name(if cfg!(windows) { "devicetally.exe" } else { "devicetally" });
+    let out = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(agent);
+        cmd.arg("uninstall").stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        cmd.output()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    *state.agent.lock().unwrap() = None;
+    refresh_tray(app).await;
+    Ok(())
+}
+
+/// Admin, when stopping DeviceTally: deletes the server and its database from Cloudflare, then
+/// removes DeviceTally's hooks and sign-in from this computer. The Cloudflare token isn't kept.
+#[tauri::command]
+async fn delete_server(app: AppHandle, state: State<'_, AppState>, cf_token: String) -> Result<(), String> {
+    use reqwest::Method;
+    let token = cf_token.trim();
+    let server = state.config.lock().unwrap().server.clone();
+    if state.token(&server).is_none() {
+        return Err("signed_out".into());
+    }
+    let accounts = cf(&state.http, token, Method::GET, "/accounts", None).await?;
+    let id = accounts.as_array().and_then(|a| a.first()).and_then(|a| a["id"].as_str()).ok_or("That token can't see a Cloudflare account.")?.to_string();
+    let sub = cf(&state.http, token, Method::GET, &format!("/accounts/{id}/workers/subdomain"), None).await?;
+    // Only delete the server this app is signed in to.
+    if format!("https://{SERVER_NAME}.{}.workers.dev", sub["subdomain"].as_str().unwrap_or_default()) != server {
+        return Err(format!("This Cloudflare account doesn't hold {server}. Use a token from the account where it runs."));
+    }
+    progress(&app, "Deleting the server");
+    cf(&state.http, token, Method::DELETE, &format!("/accounts/{id}/workers/scripts/{SERVER_NAME}?force=true"), None).await?;
+    progress(&app, "Deleting the database");
+    let dbs = cf(&state.http, token, Method::GET, &format!("/accounts/{id}/d1/database?name={SERVER_NAME}"), None).await?;
+    if let Some(db) = dbs.as_array().and_then(|a| a.iter().find(|d| d["name"] == SERVER_NAME)) {
+        cf(&state.http, token, Method::DELETE, &format!("/accounts/{id}/d1/database/{}", db["uuid"].as_str().unwrap_or_default()), None).await?;
+    }
+    progress(&app, "Removing DeviceTally from this computer");
+    let _ = uninstall_agent(&app, &state).await;
+    let _ = write_session(&app, &server, None);
+    state.set_token(None);
+    let cfg = Config { server: String::new(), ..state.config.lock().unwrap().clone() };
+    save_config(&app, &cfg)?;
+    *state.config.lock().unwrap() = cfg;
+    refresh_tray(&app).await;
+    Ok(())
+}
+
+/// Runs the bundled agent's `enroll`, then remembers this machine's device key.
+async fn run_enroll(state: &AppState, server: String, code: String) -> Result<String, String> {
+    let agent = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .with_file_name(if cfg!(windows) { "devicetally.exe" } else { "devicetally" });
+    let out = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(agent);
+        cmd.args(["enroll", &server, &code]).stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        cmd.output()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("Could not start the bundled agent: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        return Err(text.trim().lines().last().unwrap_or("The agent failed.").to_string());
+    }
+    *state.agent.lock().unwrap() = read_agent();
+    Ok(text.trim().lines().last().unwrap_or("Connected.").trim_start_matches('\r').to_string())
+}
+
+/// Every request from the main window goes through here: the admin's session or this device's key is
+/// added by Rust, so the window never holds credentials. A device may only read its own overview and
+/// sessions (the server also enforces this); prompt text and admin actions need the admin session.
+#[tauri::command]
+async fn api(state: State<'_, AppState>, method: String, path: String, body: Option<Value>) -> Result<Value, String> {
+    if !path.starts_with('/') || path.contains("..") {
+        return Err("bad_path".into());
+    }
+    let server = state.config.lock().unwrap().server.clone();
+    let admin = (!server.is_empty()).then(|| state.token(&server)).flatten();
+    let req = if let Some(token) = admin {
+        let m = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
+        let r = state.http.request(m, format!("{server}/api{path}")).header("cookie", format!("dt_session={token}"));
+        if let Some(b) = body { r.json(&b) } else { r }
+    } else {
+        let Some((agent_server, key)) = state.agent.lock().unwrap().clone() else { return Err("not_set_up".into()) };
+        let read = method == "GET" && ["/overview", "/sessions", "/summary"].iter().any(|p| path == *p || path.starts_with(&format!("{p}?")) || path.starts_with("/sessions/"));
+        let request = path == "/disconnect-request" && ["GET", "POST", "DELETE"].contains(&method.as_str());
+        if !read && !request {
+            return Err("admin_only".into());
+        }
+        let m = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
+        let r = state.http.request(m, format!("{agent_server}/api/v1{path}")).bearer_auth(key);
+        if method == "POST" { r.json(&serde_json::json!({})) } else { r }
+    };
+    let res = req.send().await.map_err(|_| "offline".to_string())?;
+    let status = res.status().as_u16();
+    let v: Value = res.json().await.unwrap_or(Value::Null);
+    match status {
+        200..=299 => Ok(v),
+        401 => Err("signed_out".into()),
+        _ => Err(v["error"].as_str().map(String::from).unwrap_or(format!("server_{status}"))),
+    }
+}
+
+/// Saves an export (admin) to the Downloads folder and returns its path.
+#[tauri::command]
+async fn save_export(app: AppHandle, state: State<'_, AppState>, format: String) -> Result<String, String> {
+    let server = state.config.lock().unwrap().server.clone();
+    let token = state.token(&server).ok_or("signed_out")?;
+    let format = if format == "csv" { "csv" } else { "json" };
+    let res = state.http.get(format!("{server}/api/export?format={format}")).header("cookie", format!("dt_session={token}")).send().await.map_err(|_| "offline".to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("server_{}", res.status().as_u16()));
+    }
+    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+    let name = format!("devicetally-export-{}.{format}", chrono_day());
+    let path = dir.join(name);
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+fn chrono_day() -> String {
+    ymd(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() / 86_400).unwrap_or(0) as i64)
+}
+
+/// Days since 1970-01-01 -> "YYYY-MM-DD" (civil-from-days, no date crate).
+fn ymd(days: i64) -> String {
+    let (z, era) = { let z = days + 719_468; (z, z.div_euclid(146_097)) };
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+// ---------- "Set up DeviceTally": create the server in the user's own Cloudflare account ----------
+// Same steps as `npm run setup`, through Cloudflare's API with a token the user creates (Workers Scripts
+// Edit, D1 Edit, Account Settings Read). The token is used for this and not stored.
+
+const WORKER_JS: &str = include_str!("../server/worker.js");
+const MIGRATIONS: &str = include_str!("../server/migrations.json");
+const SERVER_VERSION: &str = include_str!("../server/version.txt");
+const SERVER_NAME: &str = "devicetally";
+
+async fn cf(http: &reqwest::Client, token: &str, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
+    let mut req = http.request(method, format!("https://api.cloudflare.com/client/v4{path}")).bearer_auth(token);
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let v: Value = req.send().await.map_err(|_| "Could not reach Cloudflare. Check your connection.".to_string())?.json().await.map_err(|e| e.to_string())?;
+    if v["success"].as_bool() == Some(true) {
+        return Ok(v["result"].clone());
+    }
+    Err(cf_error(&v))
+}
+
+fn cf_error(v: &Value) -> String {
+    let e = &v["errors"][0];
+    match e["code"].as_i64() {
+        Some(9109 | 10000 | 9106 | 6003 | 1000) => "Cloudflare didn't accept that token. Create it again with the button above, and copy the whole token.".into(),
+        _ => format!("Cloudflare said: {}", e["message"].as_str().unwrap_or("unknown error")),
+    }
+}
+
+fn progress(app: &AppHandle, msg: &str) {
+    use tauri::Emitter;
+    let _ = app.emit("setup-progress", msg.to_string());
+}
+
+/// Creates (or finishes creating) the server and returns its address and one-time setup token.
+#[tauri::command]
+async fn create_server(app: AppHandle, state: State<'_, AppState>, cf_token: String) -> Result<Value, String> {
+    let report = |m: &str| progress(&app, m);
+    provision(&state.http, cf_token.trim(), SERVER_NAME, false, &report).await
+}
+
+/// Updates an existing server to the version bundled in this app (admin, Settings → Server).
+#[tauri::command]
+async fn update_server(app: AppHandle, state: State<'_, AppState>, cf_token: String) -> Result<Value, String> {
+    let report = |m: &str| progress(&app, m);
+    provision(&state.http, cf_token.trim(), SERVER_NAME, true, &report).await
+}
+
+/// The version of the server code bundled in this app (it changes less often than the app).
+#[tauri::command]
+fn bundled_server_version() -> &'static str {
+    SERVER_VERSION.trim()
+}
+
+/// `update`: false creates a server (or reports one exists); true updates the existing one in place,
+/// applying only new migrations and keeping its secret.
+async fn provision(http: &reqwest::Client, token: &str, name: &str, update: bool, progress: &(dyn Fn(&str) + Send + Sync)) -> Result<Value, String> {
+    use reqwest::Method;
+    progress("Checking your Cloudflare account");
+    let accounts = cf(http, token, Method::GET, "/accounts", None).await?;
+    let account = accounts.as_array().and_then(|a| a.first()).ok_or("That token can't see a Cloudflare account. Create it again and keep \"All accounts\" selected.")?;
+    let id = account["id"].as_str().unwrap_or_default().to_string();
+
+    // Your free workers.dev address: brand-new accounts don't have one yet, so pick one.
+    let sub = match cf(http, token, Method::GET, &format!("/accounts/{id}/workers/subdomain"), None).await {
+        Ok(r) if r["subdomain"].as_str().is_some_and(|s| !s.is_empty()) => r["subdomain"].as_str().unwrap().to_string(),
+        _ => {
+            progress("Choosing your free workers.dev address");
+            let base: String = account["name"].as_str().unwrap_or("devicetally").to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).take(16).collect();
+            let mut chosen = None;
+            for n in 0..5 {
+                let suffix: u32 = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos() + n) % 10_000;
+                let cand = format!("{}{suffix}", if base.len() >= 3 { base.as_str() } else { "devicetally" });
+                if cf(http, token, Method::PUT, &format!("/accounts/{id}/workers/subdomain"), Some(serde_json::json!({ "subdomain": cand }))).await.is_ok() {
+                    chosen = Some(cand);
+                    break;
+                }
+            }
+            chosen.ok_or("Could not create your workers.dev address. Open Cloudflare → Workers & Pages once, then try again.")?
+        }
+    };
+    let server = format!("https://{name}.{sub}.workers.dev");
+
+    // Already set up in this account? Then this is a sign-in (or an update), not a new server.
+    let exists = cf(http, token, Method::GET, &format!("/accounts/{id}/workers/scripts/{name}/settings"), None).await.is_ok();
+    if exists && !update {
+        return Ok(serde_json::json!({ "exists": true, "server": server }));
+    }
+    if update && !exists {
+        return Err("No DeviceTally server was found in this Cloudflare account. Use the token from the account where you set it up.".into());
+    }
+
+    progress("Creating your database");
+    let existing = cf(http, token, Method::GET, &format!("/accounts/{id}/d1/database?name={name}"), None).await?;
+    let db_id = match existing.as_array().and_then(|a| a.iter().find(|d| d["name"] == name)) {
+        Some(d) => d["uuid"].as_str().unwrap_or_default().to_string(),
+        None => cf(http, token, Method::POST, &format!("/accounts/{id}/d1/database"), Some(serde_json::json!({ "name": name }))).await?["uuid"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    };
+
+    progress("Creating tables");
+    let query_path = format!("/accounts/{id}/d1/database/{db_id}/query");
+    let query = |sql: String| cf(http, token, Method::POST, &query_path, Some(serde_json::json!({ "sql": sql })));
+    query("CREATE TABLE IF NOT EXISTS d1_migrations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL)".into()).await?;
+    let applied = query("SELECT name FROM d1_migrations".into()).await?;
+    let done: Vec<String> = applied[0]["results"].as_array().map(|r| r.iter().filter_map(|x| x["name"].as_str().map(String::from)).collect()).unwrap_or_default();
+    let migrations: Vec<Value> = serde_json::from_str(MIGRATIONS).map_err(|e| e.to_string())?;
+    for m in migrations {
+        let name = m["name"].as_str().unwrap_or_default();
+        if done.iter().any(|d| d == name) {
+            continue;
+        }
+        // Recorded the same way as `wrangler d1 migrations apply`, so `npm run update` keeps working.
+        query(format!("{}\nINSERT INTO d1_migrations (name) VALUES ('{}');", m["sql"].as_str().unwrap_or_default(), name.replace('\'', ""))).await?;
+    }
+
+    progress(if update { "Uploading the new server version" } else { "Uploading the server" });
+    let setup_token: String = {
+        use std::fmt::Write;
+        let mut s = String::new();
+        for b in random_bytes() {
+            let _ = write!(s, "{b:02x}");
+        }
+        s
+    };
+    let mut bindings = vec![
+        serde_json::json!({ "type": "d1", "name": "DB", "id": db_id }),
+        serde_json::json!({ "type": "plain_text", "name": "RELEASE_REPO", "text": "bipul0525/devicetally" }),
+    ];
+    if !update {
+        bindings.push(serde_json::json!({ "type": "secret_text", "name": "SETUP_TOKEN", "text": setup_token }));
+    }
+    let metadata = serde_json::json!({
+        "main_module": "index.js",
+        "compatibility_date": "2026-08-22",
+        "bindings": bindings,
+        // An update must not wipe the existing setup secret.
+        "keep_bindings": ["secret_text"],
+        "observability": { "enabled": true },
+    });
+    let form = reqwest::multipart::Form::new()
+        .part("metadata", reqwest::multipart::Part::text(metadata.to_string()).mime_str("application/json").map_err(|e| e.to_string())?)
+        .part("index.js", reqwest::multipart::Part::text(WORKER_JS).file_name("index.js").mime_str("application/javascript+module").map_err(|e| e.to_string())?);
+    let v: Value = http
+        .put(format!("https://api.cloudflare.com/client/v4/accounts/{id}/workers/scripts/{name}"))
+        .bearer_auth(token)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|_| "Could not reach Cloudflare. Check your connection.".to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    if v["success"].as_bool() != Some(true) {
+        return Err(cf_error(&v));
+    }
+
+    progress("Turning on your address");
+    cf(http, token, Method::POST, &format!("/accounts/{id}/workers/scripts/{name}/subdomain"), Some(serde_json::json!({ "enabled": true, "previews_enabled": false }))).await?;
+    cf(http, token, Method::PUT, &format!("/accounts/{id}/workers/scripts/{name}/schedules"), Some(serde_json::json!([{ "cron": "17 3 * * *" }]))).await?;
+
+    progress("Waiting for your server to come online");
+    for _ in 0..60 {
+        if let Ok(r) = http.get(format!("{server}/api/auth/state")).send().await {
+            if r.status().is_success() {
+                if update {
+                    return Ok(serde_json::json!({ "updated": true, "server": server, "version": SERVER_VERSION.trim() }));
+                }
+                return Ok(serde_json::json!({ "exists": false, "server": server, "setup_token": setup_token }));
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    Err(format!("Your server was created but isn't answering yet. Wait a minute, then choose \"I already have a server\" and use {server}"))
+}
+
+fn random_bytes() -> [u8; 24] {
+    let mut b = [0u8; 24];
+    getrandom::fill(&mut b).expect("random");
+    b
+}
+
+/// First run of a new server: create the admin login with the setup token, then sign in.
+#[tauri::command]
+async fn create_admin(app: AppHandle, state: State<'_, AppState>, server: String, token: String, email: String, password: String, timezone: String) -> Result<(), String> {
+    let server = server.trim().trim_end_matches('/').to_string();
+    let server = if server.starts_with("http") { server } else { format!("https://{server}") };
+    let res = state
+        .http
+        .post(format!("{server}/api/auth/setup"))
+        .json(&serde_json::json!({ "token": token, "email": email, "password": password, "timezone": timezone }))
+        .send()
+        .await
+        .map_err(|_| "Could not reach that server.".to_string())?;
+    match res.status().as_u16() {
+        200 => {}
+        403 => return Err("That setup token is not right.".into()),
+        409 => return Err("This server already has an admin. Sign in instead.".into()),
+        400 => return Err("Use a valid email and a password of at least 10 characters.".into()),
+        s => return Err(format!("The server answered {s}.")),
+    }
+    sign_in(app, state, server, email, password).await
+}
+
+/// "Open DeviceTally": the main window (the web dashboard is gone; everything lives in the app).
+#[tauri::command]
+fn open_dashboard(app: AppHandle) -> Result<(), String> {
+    show_main(&app, "overview").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_settings(app: AppHandle) -> Result<(), String> {
+    show_main(&app, "settings").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn quit(app: AppHandle) {
+    app.exit(0);
+}
+
+fn show_main_settings(app: &AppHandle) -> tauri::Result<()> {
+    show_main(app, "settings")
+}
+
+/// The main window: compact (owner: "not too broad"), opened on a given tab.
+fn show_main(app: &AppHandle, tab: &str) -> tauri::Result<()> {
+    if let Some(w) = app.get_webview_window("popover") {
+        let _ = w.hide();
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.eval(&format!("window.dispatchEvent(new CustomEvent('dt:tab', {{ detail: '{tab}' }}))"));
+        w.show()?;
+        return w.set_focus();
+    }
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::App(format!("index.html?view=main&tab={tab}").into()))
+        .title("DeviceTally")
+        .inner_size(720.0, 560.0)
+        .min_inner_size(600.0, 460.0)
+        .center()
+        .build()?;
+    Ok(())
+}
+
+// The popover as a macOS panel that can take keyboard focus (a borderless panel can't by default).
+#[cfg(target_os = "macos")]
+objc2::define_class!(
+    #[unsafe(super(objc2_app_kit::NSPanel, objc2_app_kit::NSWindow, objc2_app_kit::NSResponder, objc2::runtime::NSObject))]
+    #[thread_kind = objc2::MainThreadOnly]
+    #[name = "DeviceTallyPopoverPanel"]
+    struct PopoverPanel;
+
+    impl PopoverPanel {
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key(&self) -> bool {
+            true
+        }
+    }
+);
+
+/// macOS: show the popover over full-screen apps and on every desktop, like other menu-bar apps.
+/// Only a non-activating panel can do that: a normal window (or activating the app) makes macOS
+/// switch to the desktop the app belongs to instead.
+#[cfg(target_os = "macos")]
+fn float_everywhere(w: &tauri::WebviewWindow) {
+    use objc2::ClassType;
+    use objc2_app_kit::{NSPopUpMenuWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask};
+    let Ok(ptr) = w.ns_window() else { return };
+    // SAFETY: Tauri returns the live NSWindow for this webview window, and setup runs on the main
+    // thread. PopoverPanel adds no instance variables, so switching the class only changes behaviour.
+    let win = unsafe { &*(ptr as *const NSWindow) };
+    unsafe { objc2::runtime::AnyObject::set_class(win, PopoverPanel::class()) };
+    win.setStyleMask(win.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+    win.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    win.setLevel(NSPopUpMenuWindowLevel);
+    win.setHidesOnDeactivate(false);
+}
+
+fn toggle_popover(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("popover") else { return };
+    if w.is_visible().unwrap_or(false) {
+        let _ = w.hide();
+    } else {
+        *app.state::<AppState>().activity_seen.lock().unwrap() = now_ms();
+        let _ = w.move_window(Position::TrayCenter);
+        let _ = w.show();
+        // macOS: the panel takes focus itself; activating the app would leave the full-screen space.
+        #[cfg(not(target_os = "macos"))]
+        let _ = w.set_focus();
+    }
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_menubar_live, menubar_preview, system_stats, activity, test_alert, preview_sound, list_sounds, storage_scan, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
+        .setup(|app| {
+            // A menu-bar utility: no Dock icon, no app switcher entry.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            let handle = app.handle().clone();
+            let cfg = load_config(&handle);
+            app.manage(AppState {
+                config: Mutex::new(cfg.clone()),
+                http: reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?,
+                token: Mutex::new(Some(read_session(&handle, &cfg.server))),
+                agent: Mutex::new(read_agent()),
+                sampler: Mutex::new(stats::Sampler::new()),
+                last_stats: Mutex::new(stats::Stats::default()),
+                tokens_today: Mutex::new(None),
+                last_icon: Mutex::new(vec![]),
+                activity_seen: Mutex::new(now_ms()),
+                seen_sessions: Mutex::new(None),
+                disk_alerted: Mutex::new(0),
+            });
+
+            let open = MenuItem::with_id(app, "dashboard", "Open DeviceTally", true, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit DeviceTally", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &settings, &PredefinedMenuItem::separator(app)?, &quit])?;
+
+            // macOS: a monochrome template icon the menu bar tints for light/dark (native look).
+            // Windows/Linux: the coloured app icon, since a black one vanishes on dark taskbars.
+            #[cfg(target_os = "macos")]
+            let (icon, template) = (tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?, true);
+            #[cfg(not(target_os = "macos"))]
+            let (icon, template) = (app.default_window_icon().unwrap().clone(), false);
+            TrayIconBuilder::with_id(TRAY_ID)
+                .icon(icon)
+                .icon_as_template(template)
+                .tooltip("DeviceTally")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        toggle_popover(tray.app_handle());
+                    }
+                })
+                .on_menu_event(|app, e| match e.id.as_ref() {
+                    "dashboard" => {
+                        let _ = show_main(app, "overview");
+                    }
+                    "settings" => {
+                        let _ = show_main_settings(app);
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
+
+            // The popover closes when it loses focus, like a system popover.
+            if let Some(w) = app.get_webview_window("popover") {
+                #[cfg(target_os = "macos")]
+                float_everywhere(&w);
+                let w2 = w.clone();
+                w.on_window_event(move |e| {
+                    if let WindowEvent::Focused(false) = e {
+                        let _ = w2.hide();
+                    }
+                });
+            }
+
+            // First run: no server yet, so open Settings to sign in.
+            if cfg.server.is_empty() && read_agent().is_none() {
+                let _ = show_main_settings(&handle);
+            }
+
+            // Support check: DEVICETALLY_NOTIFY_SELFTEST=1 sends one test notification at start.
+            if std::env::var("DEVICETALLY_NOTIFY_SELFTEST").is_ok() {
+                notify_user(&handle, "DeviceTally test", "Notifications work (self-test)", Some("Glass"));
+            }
+            // Today's tokens every 5 minutes; the menu-bar item (network, CPU, clock…) every 2 seconds.
+            let h2 = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    refresh_tray(&handle).await;
+                    heartbeat(&handle).await;
+                    disk_check(&handle);
+                    tokio::time::sleep(Duration::from_secs(300)).await;
+                }
+            });
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    draw_menubar(&h2);
+                }
+            });
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running DeviceTally");
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn export_file_dates() {
+        assert_eq!(super::ymd(0), "1970-01-01");
+        assert_eq!(super::ymd(20_729), "2026-10-03");
+        assert_eq!(super::ymd(11_016), "2000-02-29");
+    }
+
+    #[test]
+    fn menu_bar_numbers_are_short() {
+        use super::fmt_short;
+        assert_eq!(fmt_short(150_660_000.0), "151M");
+        assert_eq!(fmt_short(1_726_320.0), "1.7M");
+        assert_eq!(fmt_short(2_000_000.0), "2M");
+        assert_eq!(fmt_short(12_400.0), "12K");
+        assert_eq!(fmt_short(950.0), "950");
+        assert_eq!(fmt_short(0.0), "0");
+    }
+
+}

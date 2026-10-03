@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+agent/bin/
+.DS_Store
+.claude/settings.local.json
+app/src-tauri/target/
+app/src-tauri/binaries/*
+!app/src-tauri/binaries/.gitkeep
+app/src-tauri/server/

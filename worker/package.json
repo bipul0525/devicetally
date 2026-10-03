@@ -1,0 +1,24 @@
+{
+  "name": "devicetally-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "npm run bookmark && wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "bookmark": "echo \"Restore point before this update (wrangler d1 time-travel restore DB --bookmark=<id>):\" && (wrangler d1 time-travel info DB || true)",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "setup": "node scripts/setup.mjs",
+    "update": "git pull --ff-only && npm run deploy"
+  },
+  "dependencies": {
+    "hono": "^4.13.12"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20261002.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.147.0"
+  }
+}

@@ -1,0 +1,255 @@
+<p align="center">
+  <img src="docs/assets/banner.png" alt="DeviceTally: track Claude Code, Codex and OpenCode usage across all your computers, with a menu bar you design" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/bipul0525/devicetally/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/bipul0525/devicetally?label=download&color=0a84ff"></a>
+  <img alt="macOS, Windows, Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-supported-30d158">
+  <img alt="Self-hosted on Cloudflare" src="https://img.shields.io/badge/self--hosted-Cloudflare%20free%20plan-f38020">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-lightgrey"></a>
+</p>
+
+<p align="center"><b>Your AI coding usage across all your computers, in one small menu-bar app.</b><br>
+Claude Code in detail, plus Codex, OpenCode and Kimi · agent status and alerts · a menu bar you design · free and private on your own Cloudflare account.</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#install-with-an-ai-agent">Install with an AI agent</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#faq">FAQ</a>
+</p>
+
+---
+
+## Know when your agent is done
+
+Start a task in Claude Code, switch to something else. The **Agent status** item in your menu bar turns **orange** while it works, **red** when it needs you (a permission or a question), and **green** when it's done, with an optional Mac notification and sound. It works in the terminal, in VS Code and in other editors. Codex too.
+
+<p align="center"><img src="docs/assets/agent-status.gif" alt="The Agent status pill changes from Working to Needs you to Done, with Mac notifications" width="760"></p>
+
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### Usage across every computer
+Tokens and API-equivalent cost by **tool, model, project and computer**, with a day-by-day chart split by device. Claude Code in detail (input, output, cache, thinking; cost matches [ccusage](https://github.com/ryoppippi/ccusage)), plus Codex, OpenCode and Kimi totals.
+
+</td>
+<td width="50%" valign="top">
+
+### A menu bar you design
+Agent status, tokens today, network ↑↓, CPU, CPU temperature, memory, disk, **battery with the percentage inside**, clock. Each item gets its own label (text, Apple SF Symbols icon or none), layout, size and colour. 12 fonts, a live preview, and sliders that move the real menu bar.
+
+</td>
+</tr>
+<tr>
+<td><img src="docs/assets/overview-dark.png" alt="Overview: devices table, daily chart split by device, usage by tool, model, device and project"></td>
+<td><img src="docs/assets/menubar-tab-light.png" alt="The Menu bar tab: live preview, items on the left, settings on the right"></td>
+</tr>
+<tr>
+<td valign="top">
+
+### Device health
+Every computer shows **Online / Idle / Offline**, whether it's 🔒 locked, tracking problems (hooks missing, paused, transcripts deleted), its disk with a *"full in about N weeks"* estimate, and the projects it's meant for.
+
+</td>
+<td valign="top">
+
+### Storage
+What AI tools (Ollama models, Hugging Face, Claude Code, Cursor…), developer caches (Xcode, npm, Docker, Cargo…) and big folders use: a Safe / Caution / Risky label, **Show in Finder**, and **Move to Bin** for caches. Alerts at 80% and 90% full.
+
+</td>
+</tr>
+<tr>
+<td><img src="docs/assets/devices-dark.png" alt="Devices: status, lock, tracking warnings, disk forecast, allowed projects"></td>
+<td><img src="docs/assets/storage-dark.png" alt="Storage: AI tools, developer caches and biggest folders with sizes and actions"></td>
+</tr>
+<tr>
+<td valign="top">
+
+### Prompts, if you want them
+The admin can collect prompt text (off by default) and browse it by day, with the date, device, project and agent, and filter by text, time range, project or device.
+
+</td>
+<td valign="top">
+
+### The popover
+Click the menu-bar item: tokens for today, 7 or 30 days, by tool and model (with their logos), your computers, agents running now, and this computer's CPU, temperature, memory, disk, network and battery. It works over full-screen apps.
+
+</td>
+</tr>
+<tr>
+<td><img src="docs/assets/prompts-dark.png" alt="Prompts by day with device, project, agent and filters"></td>
+<td align="center"><img src="docs/assets/popover-dark.png" alt="The popover: tokens by tool and model, devices, agents now, this computer" width="300"></td>
+</tr>
+</table>
+
+**Also:** in-app updates (signed and verified), a disconnect request flow (joined computers can't remove themselves), allowed projects per computer, **Lock this computer** (macOS), export and delete, several servers, and Windows and Linux apps.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/menubar-dark.png">
+    <img src="docs/assets/menubar-light.png" alt="A DeviceTally menu-bar item: Working pill, tokens, network, CPU, battery with 76 inside, clock" height="22">
+  </picture>
+  &nbsp;&nbsp;&nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/menubar-stats-dark.png">
+    <img src="docs/assets/menubar-stats-light.png" alt="A stats-style menu-bar item with labels on top" height="22">
+  </picture>
+  <br><sub>Real menu-bar renders: the default style, and a stats-style layout with labels on top.</sub>
+</p>
+
+## How it works
+
+<p align="center"><img src="docs/assets/how-it-works.svg" alt="Each computer's tracker sends usage to your own Cloudflare Worker and D1 database; the menu-bar app shows it" width="860"></p>
+
+- **A small tracker on each computer.** Claude Code hooks only write a line locally (about 1 ms), and uploads happen in the background, so Claude Code never slows down. Offline? Nothing is lost; it's sent later.
+- **Your own server.** A Cloudflare Worker with a D1 database in **your** free Cloudflare account. The app creates it for you in about 3 minutes, with no terminal needed. Nobody else holds your data.
+- **Filtered on your computer first.** Only accounts you approve are tracked, secrets are redacted, and prompt text is only collected if you turn it on.
+
+## Install
+
+| Your computer | Download from the [latest release](https://github.com/bipul0525/devicetally/releases/latest) |
+|---|---|
+| Mac with Apple Silicon (M1, M2, M3, M4…) | `DeviceTally_…_mac-apple-silicon.dmg` |
+| Mac with Intel | `DeviceTally_…_mac-intel.dmg` |
+| Windows | `DeviceTally_…_windows-setup.exe` |
+| Linux | `DeviceTally_…_amd64.AppImage` (any distribution) or `.deb` (Ubuntu, Debian) |
+
+Not sure which Mac? Apple menu → **About This Mac**: "Chip Apple M…" means Apple Silicon.
+
+**macOS:** open the `.dmg`, drag **DeviceTally** into **Applications**, then paste this into Terminal and press Return:
+```sh
+xattr -dr com.apple.quarantine /Applications/DeviceTally.app
+```
+DeviceTally isn't signed with a paid Apple certificate, so macOS otherwise says *"DeviceTally is damaged"*. It isn't damaged: the command only removes the "downloaded from the internet" mark. If you already saw the message, click **Cancel** (not Move to Bin), run the command, and open the app again.
+
+**Or install with one command,** on Mac or Linux (no warning, nothing else to run):
+```sh
+curl -fsSL https://raw.githubusercontent.com/bipul0525/devicetally/main/scripts/install-app.sh | sh
+```
+
+**Windows:** run the `windows-setup.exe`. If SmartScreen warns, click **More info → Run anyway**.
+
+### Install with an AI agent
+
+Paste this into Claude Code, Codex or another coding agent on the computer you want to set up:
+
+```text
+Install the DeviceTally app from https://github.com/bipul0525/devicetally on this computer.
+
+1. Detect my OS and CPU.
+2. macOS or Linux: run
+   curl -fsSL https://raw.githubusercontent.com/bipul0525/devicetally/main/scripts/install-app.sh | sh
+   (it picks the right build, installs it and opens it; on macOS it avoids the "damaged" warning).
+3. Windows: in PowerShell, find the asset ending in "_windows-setup.exe" in
+   https://api.github.com/repos/bipul0525/devicetally/releases/latest, download it to my
+   Downloads folder and run it (`/S` for a silent install), then open DeviceTally from the Start menu.
+4. Check the app is running and tell me its version (shown in the app's title bar).
+5. Then tell me the next step in the app, without doing it for me:
+   - first computer: "Set up DeviceTally" (needs my Cloudflare account and a token I create),
+   - another computer: "Join with a code" (from Devices → Add device on my first computer).
+Don't create Cloudflare tokens, passwords or accounts for me, and don't change any other settings.
+```
+
+## Set up
+
+Open DeviceTally and choose:
+
+- **Set up DeviceTally**, on your first computer. The app walks you through it:
+  1. Create a free [Cloudflare account](https://dash.cloudflare.com/sign-up) if you don't have one.
+  2. Click **Open Cloudflare's token page**. The right permissions are already filled in: click **Continue to summary**, **Create Token**, **Copy**, and paste the token into the app. It's used once and never stored. (If the page doesn't open, use **Copy link** and paste it into the browser where you're signed in to Cloudflare.)
+  3. The app creates your private server and shows its progress.
+  4. Choose your admin email and password. This computer is connected, and its history uploads.
+- **Join with a code**, on each other computer. On your first computer, go to **Devices → Add device** and copy the message it shows (server address plus a 6-letter code, valid 15 minutes). Enter both on the new computer. The same screen also shows a one-line terminal command, for computers without the app.
+- **Sign in as admin**, to manage DeviceTally from another computer too.
+
+Then open the **Menu bar** tab to design your menu-bar item. Using DeviceTally's battery or clock? Hide macOS's own in **System Settings → Control Center**.
+
+## Admin tasks
+
+| To… | Go to |
+|---|---|
+| Add a computer | **Devices → Add device** (copy the invite message) |
+| Track or ignore a Claude account | **Devices → Claude accounts** → **Track** / **Ignore** |
+| Say which projects a computer is for | **Devices** → *Projects: Change…* (work elsewhere is flagged) |
+| Approve a computer's request to disconnect | **Devices** → **Approve** / **Decline** |
+| Make tracking impossible to turn off | On that computer, signed in as admin: **Settings → Lock this computer** (macOS, asks for the Mac's admin password; works fully on a standard, non-admin account) |
+| Turn on Codex, OpenCode or Kimi | **Settings → Other AI tools** |
+| Collect prompt text or not, retention | **Settings → Tracking** |
+| Read prompts | **Settings → Data → View prompts** |
+| Export or delete data | **Settings → Data** |
+| Update your server | The **Update server** banner (asks for a Cloudflare token, used once) |
+| Manage another server | **Settings → Add server…** |
+| Stop using DeviceTally | **Settings → Stop using DeviceTally** (deletes your server and data in Cloudflare) |
+
+## Updates
+
+- **App:** updates itself (**Settings → App → Check for updates**), verified with DeviceTally's signing key before installing.
+- **Server:** has its own version and changes rarely. When an app update needs a newer server, the app shows **Update server**.
+- **Tracker:** updates itself at most once a day, checksum-verified.
+
+## FAQ
+
+<details><summary><b>Is it free?</b></summary>
+
+Yes. DeviceTally is MIT-licensed, and it runs on Cloudflare's free plan. One person with 3 to 5 busy computers uses a few thousand requests a day (the limit is 100,000) and about 12,000 database writes (the limit is 100,000).
+</details>
+
+<details><summary><b>Who can see my data?</b></summary>
+
+Only you. It lives in your own Cloudflare account. Joined computers see only their own usage, and prompt text is visible only to the admin, only if they turned collection on. Details: [docs/privacy.md](docs/privacy.md).
+</details>
+
+<details><summary><b>Does it slow Claude Code down?</b></summary>
+
+No. Hooks run asynchronously and only append a line to a local file. Uploads happen in a separate background process.
+</details>
+
+<details><summary><b>Which tools and models are supported?</b></summary>
+
+Claude Code in full detail. Codex, OpenCode and Kimi as token totals per model (via [tokscale](https://github.com/junhoyeo/tokscale)). Agent status: Claude Code (working, needs you, done) and Codex (done).
+</details>
+
+<details><summary><b>Advanced: create the server from the terminal</b></summary>
+
+Needs [Node.js](https://nodejs.org) 22+ and git.
+```sh
+git clone https://github.com/bipul0525/devicetally && cd devicetally/worker
+npm ci && npx wrangler login && npm run setup
+```
+Then, in the app: **Sign in as admin** → tick **First time on this server** → enter the address and setup token it printed, plus your email and password.
+</details>
+
+<details><summary><b>Tracker commands</b> (on each connected computer)</summary>
+
+```
+devicetally status            connection, last sync, other tools
+devicetally sync              upload now
+devicetally pause | resume    stop / restart tracking on this computer
+devicetally update            install the latest tracker (checksum-verified)
+devicetally update --rollback undo the last update
+devicetally uninstall         remove the hooks (restoring Claude's settings) and local data
+```
+</details>
+
+## Development
+
+```sh
+cd agent && go test ./...              # tracker (Go)
+cd worker && npm ci && npm test        # server (Cloudflare Worker, runs in workerd)
+cd app && npm ci && npm run app        # app (Tauri: Rust + Preact); tests: cargo test in app/src-tauri
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md). Design notes are in [docs/dev](docs/dev).
+
+## Credits
+
+[ccusage](https://github.com/ryoppippi/ccusage) (cost reference), [tokscale](https://github.com/junhoyeo/tokscale) (other tools), [ClearDisk](https://github.com/bysiber/cleardisk) (cache locations), [Simple Icons](https://simpleicons.org) and [LobeHub Icons](https://github.com/lobehub/lobe-icons) (brand marks), [Tauri](https://tauri.app), [Hono](https://hono.dev).
+
+## License
+
+MIT. DeviceTally is an independent project and is not affiliated with Anthropic, OpenAI or Cloudflare.

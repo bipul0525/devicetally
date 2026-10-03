@@ -1,0 +1,84 @@
+// Package activity keeps what each Claude Code session is doing right now (working, waiting for
+// you, done), one small file per session, for the app's menu-bar status dot. Written from the hook
+// path, so it is local only and takes well under a millisecond.
+package activity
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+)
+
+// Hook is the part of a Claude Code hook's input used here.
+type Hook struct {
+	Event     string `json:"hook_event_name"`
+	SessionID string `json:"session_id"`
+	Cwd       string `json:"cwd"`
+	Message   string `json:"message"`
+	Tool      string `json:"-"` // "" = Claude Code
+}
+
+// Status is one session's file: <dir>/<session>.json.
+type Status struct {
+	State   string `json:"state"` // working | waiting | done
+	Since   int64  `json:"since"` // ms
+	Project string `json:"project"`
+	Tool    string `json:"tool,omitempty"`    // "" = Claude Code, "codex"
+	Started int64  `json:"started,omitempty"` // ms, when the current task began (the prompt)
+}
+
+var safeID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
+
+// Dir is where the session files live, under the agent's state folder.
+func Dir(stateDir string) string { return filepath.Join(stateDir, "activity") }
+
+// Record updates the session's file for a hook event at time now (ms).
+func Record(dir string, h Hook, now int64) {
+	if !safeID.MatchString(h.SessionID) {
+		return
+	}
+	path := filepath.Join(dir, h.SessionID+".json")
+	var prev Status
+	if b, err := os.ReadFile(path); err == nil {
+		json.Unmarshal(b, &prev)
+	}
+	next := prev
+	switch h.Event {
+	case "UserPromptSubmit":
+		next.State = "working"
+		next.Started = now
+	case "Stop":
+		next.State = "done"
+	case "Notification":
+		// After a finished task Claude Code reminds you it is waiting; that isn't a new question.
+		if prev.State == "done" && strings.Contains(strings.ToLower(h.Message), "waiting for your input") {
+			return
+		}
+		next.State = "waiting"
+	default:
+		return
+	}
+	next.Since = now
+	next.Tool = h.Tool
+	if h.Cwd != "" {
+		next.Project = filepath.Base(h.Cwd)
+	}
+	b, _ := json.Marshal(next)
+	os.MkdirAll(dir, 0o700)
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		os.Rename(tmp, path)
+	}
+}
+
+// Prune removes session files not touched for two days.
+func Prune(dir string, nowMs int64) {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && nowMs-info.ModTime().UnixMilli() > 2*24*3600*1000 {
+			os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}

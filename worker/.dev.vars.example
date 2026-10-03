@@ -1,0 +1,3 @@
+# Local development only: copy to .dev.vars. For your real server, `npm run setup` sets this for you.
+# SETUP_TOKEN: the one-time token for creating the owner login on a fresh instance.
+SETUP_TOKEN=change-me

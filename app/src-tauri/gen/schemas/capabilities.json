@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"The app's own windows may call its commands; nothing else is exposed.","local":true,"windows":["popover","main"],"permissions":["core:default","core:window:allow-hide","opener:default","autostart:allow-enable","autostart:allow-disable","autostart:allow-is-enabled","updater:default","process:allow-restart"]}}

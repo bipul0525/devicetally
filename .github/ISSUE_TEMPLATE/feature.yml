@@ -1,0 +1,10 @@
+name: Feature request
+description: An idea to make DeviceTally better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like, and why?
+    validations:
+      required: true

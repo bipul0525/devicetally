@@ -1,0 +1,1500 @@
+// The main window (replaces the web dashboard). Compact, native-looking, concise.
+// Admin: everything, with prompt text only behind Settings → Prompts. A connected machine: its own
+// tokens and session times only (no prompts, no titles, no other devices).
+import { invoke } from '@tauri-apps/api/core'
+import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
+import { Fragment, type ComponentChildren } from 'preact'
+import { useEffect, useRef, useState } from 'preact/hooks'
+import { listen } from '@tauri-apps/api/event'
+import { OpenLink, Onboarding, SignIn, TOKEN_URL } from './onboarding'
+import { Mark, modelName } from './brands'
+import { AppGroup } from './updates'
+
+const api = <T,>(path: string, method = 'GET', body?: unknown) => invoke<T>('api', { method, path, body: body ?? null })
+
+const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 })
+const whole = new Intl.NumberFormat('en')
+export const fmt = (n: number) => (n < 10_000 ? whole.format(n) : compact.format(n))
+const usd = (n: number) => new Intl.NumberFormat('en', { style: 'currency', currency: 'USD' }).format(n)
+const dur = (s: number) => (s >= 3600 ? `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m` : s >= 60 ? `${Math.floor(s / 60)}m` : `${Math.round(s)}s`)
+const when = (ts: number) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+const time = (ts: number) => new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+// Device health from "last seen": computers with the app check in every 5 minutes.
+const health = (ts: number | null): { state: 'online' | 'idle' | 'offline'; text: string } => {
+  if (!ts) return { state: 'offline', text: 'Never checked in' }
+  const m = (Date.now() - ts) / 60000
+  if (m < 15) return { state: 'online', text: 'Online' }
+  if (m < 1440) return { state: 'idle', text: `Idle · seen ${ago(ts)}` }
+  return { state: 'offline', text: `Offline for ${Math.round(m / 1440)} d` }
+}
+const Health = ({ ts }: { ts: number | null }) => {
+  const h = health(ts)
+  return <span class={`health ${h.state}`} title={ts ? `Last seen ${new Date(ts).toLocaleString()}` : 'Never seen'}><i />{h.text}</span>
+}
+const ago = (ts: number | null) => {
+  if (!ts) return 'never'
+  const m = (Date.now() - ts) / 60000
+  return m < 2 ? 'now' : m < 60 ? `${Math.round(m)} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`
+}
+
+const SHAPES = [
+  <circle cx="6" cy="6" r="5" />, <path d="M6 1l5 9H1z" />, <rect x="1.5" y="1.5" width="9" height="9" rx="1" />,
+  <path d="M6 .8l5.2 5.2L6 11.2.8 6z" />, <circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="2.4" />,
+  <rect x="1" y="3.5" width="10" height="5" rx="1" />,
+]
+export const Chip = ({ i }: { i: number }) => <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">{SHAPES[Math.max(0, i) % 6]}</svg>
+
+type Status = { server: string; signed_in: boolean; this_device_connected: boolean; agent_server: string }
+
+function useLoad<T>(path: string | null, deps: unknown[] = []) {
+  const [s, set] = useState<{ data?: T; error?: string }>({})
+  const [n, setN] = useState(0)
+  useEffect(() => {
+    if (!path) return
+    let live = true
+    set((x) => ({ data: x.data }))
+    api<T>(path).then((data) => live && set({ data }), (e) => live && set({ error: String(e) }))
+    return () => { live = false }
+  }, [path, n, ...deps])
+  return { ...s, reload: () => setN((x) => x + 1) }
+}
+
+function Load<T>({ q, children }: { q: ReturnType<typeof useLoad<T>>; children: (d: T) => ComponentChildren }) {
+  if (q.error) {
+    return (
+      <div class="state" role="alert">
+        <strong>{q.error === 'offline' ? 'Can’t reach your server' : q.error === 'server_404' ? 'Your server needs an update' : 'Could not load this'}</strong>
+        <span>{q.error === 'offline' ? 'Check your connection.' : q.error === 'server_404' ? 'This screen needs a newer server. Settings → Server → Update server.' : q.error}</span>
+        <button class="btn" onClick={q.reload}>Try again</button>
+      </div>
+    )
+  }
+  if (!q.data) return <div aria-label="Loading" class="section"><div class="skel" style={{ height: 30, width: '50%' }} /><div class="skel" style={{ height: 12, width: '70%' }} /></div>
+  return <>{children(q.data)}</>
+}
+
+function Bars({ items, max }: { items: { key: string; label: ComponentChildren; value: number; text: string }[]; max?: number }) {
+  if (!items.length) return <p class="hint">Nothing in this range.</p>
+  const m = max ?? Math.max(1, ...items.map((i) => i.value))
+  return (
+    <>
+      {items.map((i) => (
+        <div class="row" key={i.key}>
+          <span class="name">{i.label}</span><span class="val num">{i.text}</span>
+          <div class="track" aria-hidden="true"><div style={{ width: `${(i.value / m) * 100}%` }} /></div>
+        </div>
+      ))}
+    </>
+  )
+}
+
+const RANGES = [['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '12 months']] as const
+
+function Seg<T extends string>({ value, options, onChange, label }: { value: T; options: readonly (readonly [T, string])[]; onChange: (v: T) => void; label: string }) {
+  return (
+    <div class="seg" role="group" aria-label={label} style={{ gridTemplateColumns: `repeat(${options.length}, 1fr)` }}>
+      {options.map(([k, l]) => <button key={k} aria-pressed={value === k} onClick={() => onChange(k)}>{l}</button>)}
+    </div>
+  )
+}
+
+// ---------- Overview ----------
+type Totals = { tokens: number; cost: number; turns: number; sessions: number; active_seconds: number; prompts: number }
+type Overview = {
+  totals: Totals; previous: Totals
+  daily: ({ day: string } & Totals)[]
+  by: Record<'device' | 'model' | 'tool' | 'project', ({ key: string } & Totals)[]>
+  labels: { devices: { id: string; name: string }[]; projects: { key: string; display_name: string | null }[]; tools: Record<string, string>; tools_seen: string[] }
+}
+
+const PALETTE = ['#0a84ff', '#30d158', '#ff9f0a', '#bf5af2', '#ff375f', '#64d2ff', '#ffd60a', '#ac8e68']
+
+/** Tokens per day: one bar per day, split by device (colours), with a scale and dates. */
+function DailyChart({ days, series }: { days: { day: string; tokens: number }[]; series: { name: string; daily: Map<string, number> }[] | null }) {
+  const W = 1000, H = 200, L = 52, B = 22, T = 8
+  const max = Math.max(1, ...days.map((d) => d.tokens))
+  const step = (W - L) / Math.max(1, days.length)
+  const bw = Math.max(1, step * 0.72)
+  const y = (v: number) => H - B - (v / max) * (H - B - T)
+  const every = Math.max(1, Math.ceil(days.length / 8))
+  const label = (day: string) => new Date(`${day}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const stacks = series && series.length > 1
+  return (
+    <div class="chart">
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Tokens per day">
+        <g class="grid">
+          {[0, 0.5, 1].map((f) => <g key={f}><line x1={L} x2={W} y1={y(max * f)} y2={y(max * f)} /><text x={L - 8} y={y(max * f) + 3} text-anchor="end">{fmt(Math.round(max * f))}</text></g>)}
+        </g>
+        {days.map((d, i) => {
+          const x = L + i * step + (step - bw) / 2
+          let acc = 0
+          const parts = stacks ? series!.map((s, k) => ({ k, name: s.name, v: s.daily.get(d.day) ?? 0 })).filter((p) => p.v > 0) : [{ k: 0, name: '', v: d.tokens }]
+          return (
+            <g key={d.day}>
+              {parts.map((p) => {
+                const top = y(acc + p.v), h = y(acc) - top
+                acc += p.v
+                return <rect key={p.k} x={x} y={top} width={bw} height={Math.max(0, h)} rx={Math.min(2, bw / 4)} fill={PALETTE[p.k % PALETTE.length]}><title>{`${label(d.day)}${p.name ? ` · ${p.name}` : ''}: ${fmt(p.v)} tokens`}</title></rect>
+              })}
+              {i % every === 0 && <text x={x + bw / 2} y={H - 6} text-anchor="middle">{label(d.day)}</text>}
+            </g>
+          )
+        })}
+      </svg>
+      {stacks && <div class="legend">{series!.map((s, k) => <span key={s.name}><i style={{ background: PALETTE[k % PALETTE.length] }} />{s.name}</span>)}</div>}
+    </div>
+  )
+}
+
+type DeviceUsage = { id: string; name: string; os: string | null; chip: number; today: number; week: number; month: number; active_week: number; last_active: number | null; last_prompt: number | null; last_seen: number | null }
+
+// Admin: every computer side by side, so it's clear which one uses how much. Click to filter.
+function DevicesAtGlance({ selected, select }: { selected: string; select: (id: string) => void }) {
+  const q = useLoad<DeviceUsage[]>('/device-usage')
+  const devs = useLoad<Device[]>('/devices')
+  // Tracking problems reported by a computer's app (details under Devices).
+  const problems = (devs.data ?? []).filter((d) => !d.revoked_at && d.health).flatMap((d) => {
+    const h = d.health!
+    const out: string[] = []
+    if (h.hooks === 'missing') out.push(`${d.name}: Claude Code tracking hooks are missing`)
+    if (h.paused) out.push(`${d.name}: tracking is paused`)
+    const removed = (h.removed ?? []).filter((r) => Date.now() - r.at < 7 * 86400_000).length
+    if (removed) out.push(`${d.name}: ${removed} Claude Code transcript${removed > 1 ? 's were' : ' was'} deleted before upload`)
+    if (!h.locked && h.config_dirs?.length) out.push(`${d.name}: Claude Code has another settings folder that isn't tracked`)
+    if (d.disk_full_in_days != null && d.disk_full_in_days < 14) out.push(`${d.name}: disk full in about ${d.disk_full_in_days} days`)
+    return out
+  })
+  return (
+    <section class="section"><h2>Devices</h2>
+      <Load q={q}>
+        {(rows) => (<>
+          {problems.map((p) => <div key={p} class="banner warn-banner" role="status"><span>{p}. See Devices.</span></div>)}
+          {rows.filter((d) => health(d.last_seen ?? d.last_active).state === 'offline').map((d) => (
+            <div key={d.id} class="banner warn-banner" role="status"><span><b>{d.name}</b> hasn't checked in for {Math.round((Date.now() - (d.last_seen ?? d.last_active ?? 0)) / 86400000)} days. It may be off, offline, or DeviceTally was removed from it.</span></div>
+          ))}
+          <table class="list">
+            <thead><tr><th>Device</th><th>Status</th><th class="r">Today</th><th class="r">7 days</th><th class="r">30 days</th><th class="r">Active (7 days)</th><th>Last active</th><th>Last prompt</th></tr></thead>
+            <tbody>
+              {rows.map((d) => (
+                <tr key={d.id} tabIndex={0} aria-selected={selected === d.id} class={selected === d.id ? 'selected' : ''}
+                  onClick={() => select(selected === d.id ? '' : d.id)} onKeyDown={(e) => e.key === 'Enter' && select(selected === d.id ? '' : d.id)}>
+                  <td><span class="name"><Chip i={d.chip} /> {d.name}</span></td>
+                  <td><Health ts={d.last_seen ?? d.last_active} /></td>
+                  <td class="r num">{fmt(d.today)}</td><td class="r num">{fmt(d.week)}</td><td class="r num">{fmt(d.month)}</td>
+                  <td class="r num">{dur(d.active_week)}</td>
+                  <td>{ago(d.last_active ?? d.last_seen)}</td>
+                  <td>{ago(d.last_prompt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></>
+        )}
+      </Load>
+      {selected && <p class="hint" style={{ margin: 0 }}>Showing one device below. <button class="link-btn" onClick={() => select('')}>Show all</button></p>}
+    </section>
+  )
+}
+
+function OverviewTab({ admin }: { admin: boolean }) {
+  const [range, setRange] = useState<(typeof RANGES)[number][0]>('30')
+  const [tool, setTool] = useState('')
+  const [device, setDevice] = useState('')
+  const q = useLoad<Overview>(`/overview?days=${range}${tool ? `&tool=${tool}` : ''}${device ? `&device=${device}` : ''}`)
+  // Admin, all devices: each device's own daily totals, for the stacked chart.
+  const [series, setSeries] = useState<{ name: string; daily: Map<string, number> }[] | null>(null)
+  const devs = q.data?.labels.devices ?? []
+  useEffect(() => {
+    setSeries(null)
+    if (!admin || device || devs.length < 2) return
+    let live = true
+    Promise.all(devs.map((d) => api<Overview>(`/overview?days=${range}${tool ? `&tool=${tool}` : ''}&device=${d.id}`)
+      .then((o) => ({ name: d.name, daily: new Map(o.daily.map((x) => [x.day, x.tokens])) }))))
+      .then((s) => live && setSeries(s), () => {})
+    return () => { live = false }
+  }, [admin, device, range, tool, devs.map((d) => d.id).join()])
+  const devIndex = (id: string) => q.data?.labels.devices.findIndex((d) => d.id === id) ?? 0
+  return (
+    <div class="page">
+      {admin && <DevicesAtGlance selected={device} select={setDevice} />}
+      <div class="toolbar">
+        <Seg label="Range" value={range} options={RANGES} onChange={setRange} />
+        {admin && q.data && q.data.labels.tools_seen.length > 0 && (
+          <select aria-label="Tool" value={tool} onChange={(e) => setTool(e.currentTarget.value)}>
+            <option value="">All tools</option>
+            {['claude', ...q.data.labels.tools_seen].map((t) => <option key={t} value={t}>{q.data!.labels.tools[t] ?? t}</option>)}
+          </select>
+        )}
+        {admin && q.data && q.data.labels.devices.length > 1 && (
+          <select aria-label="Device" value={device} onChange={(e) => setDevice(e.currentTarget.value)}>
+            <option value="">All devices</option>
+            {q.data.labels.devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        )}
+      </div>
+      <Load q={q}>
+        {(d) => {
+          const t = d.totals
+          const change = d.previous.tokens ? Math.round(((t.tokens - d.previous.tokens) / d.previous.tokens) * 100) : null
+          return (
+            <>
+              <div class="focal">
+                <div class="big num">{fmt(t.tokens)} <span style={{ fontSize: 13, fontWeight: 400 }}>tokens</span></div>
+                <div class="sub num">
+                  {admin && <span title="What this usage would cost at API prices. Subscriptions are a flat fee.">{usd(t.cost)} API-equivalent</span>}
+                  {change !== null && <span class="trend">{change >= 0 ? '+' : ''}{change}% vs previous {RANGES.find((r) => r[0] === range)![1]}</span>}
+                </div>
+              </div>
+              <div class="stats num">
+                <span><b>{fmt(t.sessions)}</b> sessions</span>
+                <span><b>{dur(t.active_seconds)}</b> active</span>
+                {admin && <span><b>{fmt(t.turns)}</b> replies</span>}
+              </div>
+              <DailyChart days={d.daily} series={series} />
+              <div class="cols">
+                {admin && <section class="section"><h2>By tool</h2>
+                  <Bars items={d.by.tool.map((x) => ({ key: x.key, label: <><Mark of={x.key} />{d.labels.tools[x.key] ?? x.key}</>, value: x.tokens, text: fmt(x.tokens) }))} /></section>}
+                {admin && <section class="section"><h2>By model</h2>
+                  <Bars items={d.by.model.slice(0, 6).map((x) => ({ key: x.key, label: <span title={x.key}><Mark of={x.key} />{modelName(x.key)}</span>, value: x.tokens, text: fmt(x.tokens) }))} /></section>}
+                {admin && d.labels.devices.length > 1 && (
+                  <section class="section"><h2>By device</h2>
+                    <Bars items={d.by.device.map((x) => ({ key: x.key, label: <><Chip i={devIndex(x.key)} />{d.labels.devices.find((v) => v.id === x.key)?.name ?? 'Unknown'}</>, value: x.tokens, text: fmt(x.tokens) }))} /></section>
+                )}
+                <section class="section"><h2>By project</h2>
+                  <Bars items={d.by.project.slice(0, 6).map((x) => ({ key: x.key, label: d.labels.projects.find((p) => p.key === x.key)?.display_name ?? x.key, value: x.tokens, text: fmt(x.tokens) }))} /></section>
+              </div>
+            </>
+          )
+        }}
+      </Load>
+    </div>
+  )
+}
+
+// ---------- Sessions ----------
+type SessionRow = { id: string; device_id: string; project_key: string; title: string | null; started_at: number; ended_at: number; active_seconds: number; tokens: number }
+type Detail = {
+  session: SessionRow & { entrypoint: string | null }
+  prompts: { id: string; ts: number }[]
+  turns: { id: string; ts: number; model: string | null; in_tok: number; out_tok: number; cache_write_tok: number; cache_read_tok: number; is_subagent: number; cost: number | null }[]
+}
+
+function SessionsTab({ admin }: { admin: boolean }) {
+  const [range, setRange] = useState<(typeof RANGES)[number][0]>('30')
+  const [open, setOpen] = useState<string | null>(null)
+  const q = useLoad<SessionRow[]>(`/sessions?days=${range}`)
+  const meta = useLoad<Overview>(`/overview?days=365`)
+  const project = (k: string) => meta.data?.labels.projects.find((p) => p.key === k)?.display_name ?? k.replace(/^local\//, '')
+  const devices = meta.data?.labels.devices ?? []
+  if (open) return <SessionDetail id={open} admin={admin} back={() => setOpen(null)} project={project} devices={devices} />
+  return (
+    <div class="page">
+      <div class="toolbar"><Seg label="Range" value={range} options={RANGES} onChange={setRange} /></div>
+      <Load q={q}>
+        {(rows) => !rows.length ? <p class="hint">No sessions in this range.</p> : (
+          <table class="list">
+            <thead><tr><th>Started</th><th>Project</th>{admin && devices.length > 1 && <th>Device</th>}<th class="r">Active</th><th class="r">Tokens</th></tr></thead>
+            <tbody>
+              {rows.map((s) => (
+                <tr key={s.id} tabIndex={0} onClick={() => setOpen(s.id)} onKeyDown={(e) => e.key === 'Enter' && setOpen(s.id)}>
+                  <td class="num">{when(s.started_at)}</td>
+                  {/* Titles are written from prompt text, so only the admin sees them. */}
+                  <td>{project(s.project_key)}{admin && s.title && <div class="hint" style={{ margin: 0 }}>{s.title}</div>}</td>
+                  {admin && devices.length > 1 && <td><span class="name"><Chip i={devices.findIndex((d) => d.id === s.device_id)} /> {devices.find((d) => d.id === s.device_id)?.name}</span></td>}
+                  <td class="r num">{dur(s.active_seconds)}</td>
+                  <td class="r num">{fmt(s.tokens)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Load>
+    </div>
+  )
+}
+
+function SessionDetail({ id, admin, back, project, devices }: { id: string; admin: boolean; back: () => void; project: (k: string) => string; devices: { id: string; name: string }[] }) {
+  const q = useLoad<Detail>(`/sessions/${encodeURIComponent(id)}`)
+  return (
+    <div class="page">
+      <div class="toolbar"><button class="btn" onClick={back}>‹ Sessions</button></div>
+      <Load q={q}>
+        {(d) => {
+          const s = d.session
+          const tok = d.turns.reduce((a, t) => a + t.in_tok + t.out_tok + t.cache_write_tok + t.cache_read_tok, 0)
+          const cost = d.turns.reduce((a, t) => a + (t.cost ?? 0), 0)
+          // Group replies under the prompt (time only) that preceded them.
+          const steps: { at?: number; turns: Detail['turns'] }[] = []
+          let pi = 0
+          for (const t of d.turns) {
+            while (pi < d.prompts.length && d.prompts[pi].ts <= t.ts) steps.push({ at: d.prompts[pi++].ts, turns: [] })
+            if (!steps.length) steps.push({ turns: [] })
+            steps.at(-1)!.turns.push(t)
+          }
+          return (
+            <>
+              <h2 class="title">{admin && s.title ? s.title : project(s.project_key)}</h2>
+              <p class="hint" style={{ marginTop: 0 }}>{project(s.project_key)}{devices.length > 1 ? ` · ${devices.find((x) => x.id === s.device_id)?.name ?? ''}` : ''} · {when(s.started_at)}</p>
+              <div class="stats num">
+                <span><b>{fmt(tok)}</b> tokens</span>{admin && <span><b>{usd(cost)}</b></span>}
+                <span><b>{dur(s.active_seconds)}</b> active</span><span><b>{dur((s.ended_at - s.started_at) / 1000)}</b> total</span>
+              </div>
+              <ol class="timeline">
+                {steps.map((st, i) => {
+                  const g = st.turns
+                  const sum = g.reduce((a, t) => a + t.in_tok + t.out_tok + t.cache_write_tok + t.cache_read_tok, 0)
+                  const models = [...new Set(g.map((t) => t.model).filter(Boolean))].join(', ')
+                  return (
+                    <li key={i}>
+                      <span class="num">{st.at ? time(st.at) : time(g[0]?.ts ?? s.started_at)}</span>
+                      <span>{g.length} {g.length === 1 ? 'reply' : 'replies'}{admin ? `${g.some((t) => t.is_subagent) ? ' (incl. subagents)' : ''} · ${models}` : ''}</span>
+                      <span class="num val">{fmt(sum)}</span>
+                    </li>
+                  )
+                })}
+              </ol>
+            </>
+          )
+        }}
+      </Load>
+    </div>
+  )
+}
+
+// ---------- Devices (admin) ----------
+type Device = { id: string; name: string; os: string | null; arch: string | null; agent_version: string | null; last_seen: number | null; revoked_at: number | null; disconnect_requested_at?: number | null
+  health?: DeviceHealth | null; health_at?: number | null; disk_full_in_days?: number | null }
+type DeviceHealth = { hooks?: 'locked' | 'user' | 'missing'; locked?: boolean; paused?: boolean; removed?: { path: string; at: number }[]; config_dirs?: string[]; disk_free?: number; disk_total?: number; app?: string; agent?: string }
+
+/** Under each computer in Devices: tracking health, disk, and the projects it's meant for. */
+function DeviceDetails({ d, settings, saved }: { d: Device; settings: SettingRow[]; saved: () => void }) {
+  const h = d.health
+  const own = JSON.parse(settings.find((r) => r.scope === 'device' && r.scope_id === d.id)?.json ?? '{}') as { allowed_projects?: string[] }
+  const allowed = own.allowed_projects ?? []
+  const month = useLoad<Overview>(`/overview?days=30&device=${d.id}`)
+  const week = useLoad<Overview>(`/overview?days=7&device=${d.id}`)
+  const [editing, setEditing] = useState<string[] | null>(null)
+  const name = (k: string) => month.data?.labels.projects.find((p) => p.key === k)?.display_name ?? k.split('/').pop() ?? k
+  const outside = allowed.length ? (week.data?.by.project ?? []).filter((p) => p.tokens > 0 && !allowed.includes(p.key)) : []
+  const recentRemoved = (h?.removed ?? []).filter((r) => Date.now() - r.at < 7 * 86400_000)
+  const save = async () => {
+    await api(`/settings/device/${d.id}`, 'PUT', { ...own, allowed_projects: editing })
+    setEditing(null); saved()
+  }
+  const badges: [string, string, string][] = [] // [kind, text, title]
+  if (h) {
+    badges.push(h.locked ? ['ok', '🔒 Locked', 'Tracking is in Claude Code\'s system-wide settings'] : ['', 'Not locked', 'Settings → Lock this computer, on that computer'])
+    if (h.hooks === 'missing') badges.push(['bad', 'Tracking hooks missing', 'Claude Code isn\'t reporting to DeviceTally on this computer'])
+    if (h.paused) badges.push(['warn', 'Tracking paused', 'Someone ran "devicetally pause"'])
+    if (recentRemoved.length) badges.push(['bad', `${recentRemoved.length} transcript${recentRemoved.length > 1 ? 's' : ''} deleted`, recentRemoved.map((r) => r.path).join('\n')])
+    if (h.config_dirs?.length) badges.push([h.locked ? '' : 'warn', `Other Claude settings folder${h.config_dirs.length > 1 ? 's' : ''}${h.locked ? ' (covered by the lock)' : ''}`, h.config_dirs.join('\n')])
+  } else badges.push(['', 'No health report yet', 'Reports come from DeviceTally 0.10 or newer on that computer'])
+  if (outside.length) badges.push(['bad', `Used outside its projects: ${outside.map((p) => name(p.key)).join(', ')}`, 'In the last 7 days'])
+  return (
+    <div class="device-details">
+      <div class="badges">{badges.map(([k, t, title]) => <span key={t} class={`badge ${k}`} title={title}>{t}</span>)}</div>
+      <div class="hint" style={{ margin: 0 }}>
+        {h?.disk_total ? <>Disk {gbText(h.disk_free ?? 0)} free of {gbText(h.disk_total)}{d.disk_full_in_days != null && <b class={d.disk_full_in_days < 30 ? 'warn' : ''}> · full in about {d.disk_full_in_days < 14 ? `${d.disk_full_in_days} days` : `${Math.round(d.disk_full_in_days / 7)} weeks`}</b>}</> : null}
+        {h?.app && <> · App {h.app}</>}{d.health_at ? <> · reported {ago(d.health_at)}</> : null}
+        {' · '}Projects: {allowed.length ? allowed.map(name).join(', ') : 'any'} <button class="link-btn" onClick={() => setEditing(allowed)}>Change…</button>
+      </div>
+      {editing && (
+        <div class="allowed-editor">
+          <span class="hint" style={{ margin: 0 }}>Projects this computer is meant for (used in the last 30 days). Others are flagged; none ticked = any.</span>
+          <div class="checks">
+            {(month.data?.by.project ?? []).map((p) => (
+              <label key={p.key}><input type="checkbox" checked={editing.includes(p.key)} onChange={(e) => setEditing(e.currentTarget.checked ? [...editing, p.key] : editing.filter((x) => x !== p.key))} /> {name(p.key)}</label>
+            ))}
+            {!month.data?.by.project.length && <span class="hint" style={{ margin: 0 }}>No projects used on this computer yet.</span>}
+          </div>
+          <span><button class="btn primary" onClick={save}>Save</button> <button class="btn" onClick={() => setEditing(null)}>Cancel</button></span>
+        </div>
+      )}
+    </div>
+  )
+}
+const OS: Record<string, string> = { darwin: 'macOS', linux: 'Linux', windows: 'Windows' }
+
+function DevicesTab({ server }: { server: string }) {
+  const q = useLoad<Device[]>('/devices')
+  const settings = useLoad<SettingRow[]>('/settings')
+  const usage = useLoad<Overview>('/overview?days=30')
+  const [adding, setAdding] = useState(false)
+  const [name, setName] = useState('')
+  const [code, setCode] = useState<string | null>(null)
+  const [copied, setCopied] = useState('')
+  const [err, setErr] = useState('')
+  const live = (q.data ?? []).filter((d) => !d.revoked_at)
+  const create = async (e: Event) => {
+    e.preventDefault()
+    try {
+      setCode((await api<{ code: string }>('/devices/enroll', 'POST', { name })).code)
+    } catch (x) { setErr(String(x)) }
+  }
+  // Inline, not prompt()/confirm(): those browser dialogs don't appear in the app window.
+  const [edit, setEdit] = useState<{ id: string; mode: 'rename' | 'disconnect'; name: string } | null>(null)
+  const act = (fn: () => Promise<unknown>) => async (e?: Event) => {
+    e?.preventDefault()
+    try { await fn(); setEdit(null); q.reload() } catch (x) { setErr(String(x)) }
+  }
+  const rename = (d: Device, name: string) => act(() => api(`/devices/${d.id}`, 'PATCH', { name: name.trim() }))
+  const revoke = (d: Device) => act(() => api(`/devices/${d.id}`, 'PATCH', { revoked: true }))
+  const decline = async (d: Device) => { await api(`/devices/${d.id}`, 'PATCH', { decline_disconnect: true }); q.reload() }
+  const copy = (t: string) => navigator.clipboard.writeText(t).then(() => setCopied(t))
+  const cmds = code ? [['macOS / Linux', `curl -fsSL ${server}/i/${code} | sh`], ['Windows', `irm ${server}/i/${code} | iex`]] : []
+  // A ready-to-send note for the other computer: install the app, then join with these two values.
+  const invite = code ? `To add a computer to DeviceTally:
+1. Install the app. macOS / Linux, in Terminal:
+   curl -fsSL ${server}/app | sh
+   Windows: https://github.com/bipul0525/devicetally/releases/latest
+2. Open DeviceTally and choose "Join with a code".
+   Server address: ${server}
+   Code: ${code} (valid 15 minutes)` : ''
+  return (
+    <div class="page">
+      <p class="hint" style={{ marginTop: 0 }}>Online: checked in within 15 minutes. Computers running the DeviceTally app check in every 5 minutes; ones with only the terminal tracker check in when Claude Code is used.</p>
+      <div class="toolbar"><span class="hint" style={{ margin: 0 }}>{live.length} connected{live.some((d) => d.disconnect_requested_at) ? ' · a computer asks to be disconnected' : ''}</span><span class="spacer" />
+        <button class="btn primary" onClick={() => { setAdding(true); setCode(null); setName('') }}>Add device</button></div>
+      {adding && (
+        <div class="group" style={{ padding: 12 }}>
+          {!code ? (
+            <form class="name-row" style={{ padding: 0 }} onSubmit={create}>
+              <input aria-label="Device name" placeholder="Office PC" required value={name} onInput={(e) => setName(e.currentTarget.value)} />
+              <button class="btn primary">Create code</button><button type="button" class="btn" onClick={() => setAdding(false)}>Cancel</button>
+            </form>
+          ) : (
+            <div class="section">
+              <div><span class="hint" style={{ margin: 0 }}>One-time code, valid 15 minutes</span><div class="big num" style={{ letterSpacing: '0.12em' }}>{code}</div></div>
+              <span class="hint" style={{ margin: 0 }}>Send this to the other computer (or read it from there):</span>
+              <div class="cmd"><code style={{ whiteSpace: 'pre', fontSize: 11 }}>{invite}</code><button class="btn" onClick={() => copy(invite)}>{copied === invite ? 'Copied' : 'Copy'}</button></div>
+              <span class="hint" style={{ margin: 0 }}>Or, without the app, connect it from a terminal:</span>
+              {cmds.map(([l, c]) => (
+                <div key={l} class="cmd"><span class="hint" style={{ margin: 0, width: 92 }}>{l}</span><code>{c}</code><button class="btn" onClick={() => copy(c)}>{copied === c ? 'Copied' : 'Copy'}</button></div>
+              ))}
+              <div class="actions"><button class="btn" onClick={() => { setAdding(false); q.reload() }}>Done</button></div>
+            </div>
+          )}
+          {err && <p class="err">{err}</p>}
+        </div>
+      )}
+      <Load q={q}>
+        {(list) => (
+          <table class="list">
+            <thead><tr><th>Device</th><th>System</th><th>Status</th><th class="r">30 days</th><th /></tr></thead>
+            <tbody>
+              {list.map((d, i) => (<Fragment key={d.id}>
+                <tr key={d.id} style={d.revoked_at ? { opacity: 0.5 } : undefined} class={d.revoked_at ? '' : 'has-details'}>
+                  <td><span class="name"><Chip i={i} /> {d.name}</span></td>
+                  <td class="hint" style={{ margin: 0 }}>{d.os ? `${OS[d.os] ?? d.os} · ${d.agent_version ?? ''}` : 'Waiting for first sync'}</td>
+                  <td>{d.revoked_at ? 'Disconnected' : <Health ts={d.last_seen} />}
+                    {!d.revoked_at && d.disconnect_requested_at && <div class="request">Asks to be disconnected · {ago(d.disconnect_requested_at)}
+                      <span><button class="btn primary" onClick={revoke(d)}>Approve</button> <button class="btn" onClick={() => decline(d)}>Decline</button></span></div>}</td>
+                  <td class="r num">{fmt(usage.data?.by.device.find((x) => x.key === d.id)?.tokens ?? 0)}</td>
+                  <td class="r">{!d.revoked_at && (edit?.id === d.id ? (
+                    edit.mode === 'rename' ? (
+                      <form class="inline-confirm" onSubmit={rename(d, edit.name)}>
+                        <input aria-label="New name" value={edit.name} onInput={(e) => setEdit({ ...edit, name: e.currentTarget.value })} />
+                        <button class="btn primary" disabled={!edit.name.trim()}>Save</button><button type="button" class="btn" onClick={() => setEdit(null)}>Cancel</button>
+                      </form>
+                    ) : (
+                      <span class="inline-confirm"><span>Stop tracking it now? Past usage stays.</span>
+                        <button class="btn danger" onClick={revoke(d)}>Disconnect</button><button class="btn" onClick={() => setEdit(null)}>Cancel</button></span>
+                    )
+                  ) : <><button class="link-btn" onClick={() => setEdit({ id: d.id, mode: 'rename', name: d.name })}>Rename</button><button class="link-btn" onClick={() => setEdit({ id: d.id, mode: 'disconnect', name: d.name })}>Disconnect</button></>)}</td>
+                </tr>
+                {!d.revoked_at && <tr class="details-row"><td colSpan={5}><DeviceDetails d={d} settings={settings.data ?? []} saved={settings.reload} /></td></tr>}
+              </Fragment>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Load>
+      <AccountsSection />
+    </div>
+  )
+}
+
+// ---------- People (admin) ----------
+// One owner, several computers: a "person" is a Claude account. Waiting accounts come first.
+type Person = { uuid: string; email: string | null; display_name: string | null; plan: string | null; status: 'approved' | 'ignored' | 'pending'; today: number; week: number; month: number; last_active: number | null; devices: { id: string; name: string }[] }
+
+// Shown under Devices: most people use one account, so it doesn't need its own tab.
+function AccountsSection() {
+  const q = useLoad<Person[]>('/people')
+  const set = async (uuid: string, status: string) => { await api(`/accounts/${uuid}`, 'PATCH', { status }); q.reload() }
+  return (
+    <section class="section"><h2>Claude accounts</h2>
+      <Load q={q}>
+        {(list) => !list.length ? <p class="hint">No accounts yet. They appear after a computer's first sync.</p> : (
+          <>
+            {list.some((p) => p.status === 'pending') && <p class="hint" style={{ marginTop: 0 }}>New accounts are not tracked until you choose <b>Track</b>.</p>}
+            <table class="list">
+              <thead><tr><th>Account</th><th class="r">Today</th><th class="r">7 days</th><th class="r">30 days</th><th>Last active</th><th /></tr></thead>
+              <tbody>
+                {list.map((p) => (
+                  <tr key={p.uuid} style={p.status === 'ignored' ? { opacity: 0.5 } : undefined}>
+                    <td>{p.email ?? p.display_name ?? p.uuid}<div class="hint" style={{ margin: 0 }}>{p.devices.length ? p.devices.map((d) => d.name).join(', ') : p.status === 'pending' ? 'Waiting for you' : p.status === 'ignored' ? 'Ignored' : 'No recent use'}</div></td>
+                    <td class="r num">{fmt(p.today)}</td><td class="r num">{fmt(p.week)}</td><td class="r num">{fmt(p.month)}</td>
+                    <td>{ago(p.last_active)}</td>
+                    <td class="r">
+                      {p.status !== 'approved' && <button class="btn primary" onClick={() => set(p.uuid, 'approved')}>Track</button>}
+                      {p.status === 'approved' && <button class="link-btn" onClick={() => set(p.uuid, 'ignored')}>Stop tracking</button>}
+                      {p.status === 'pending' && <button class="link-btn" onClick={() => set(p.uuid, 'ignored')}>Ignore</button>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </Load>
+    </section>
+  )
+}
+
+// ---------- Prompts (admin, reached from Settings only) ----------
+type PromptRow = { id: string; ts: number; text: string | null; project_key: string; device_id: string; session_id: string; title: string | null }
+
+const dayLabel = (ts: number) => {
+  const d = new Date(ts), now = new Date()
+  const same = (a: Date, b: Date) => a.toDateString() === b.toDateString()
+  const full = d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+  if (same(d, now)) return `Today · ${full}`
+  if (same(d, new Date(now.getTime() - 86400_000))) return `Yesterday · ${full}`
+  return full
+}
+// On each prompt: "Thu, 1 Oct · 6:44 PM" (with the year when it isn't this year).
+const promptWhen = (ts: number) => {
+  const d = new Date(ts)
+  const date = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) })
+  return `${date} · ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
+}
+
+function Highlight({ text }: { text: string }) {
+  return <>{text.split('\u0002').map((part, i) => {
+    if (!i) return part
+    const [hit, rest = ''] = part.split('\u0003')
+    return <><mark>{hit}</mark>{rest}</>
+  })}</>
+}
+
+// Admin only, reached from Settings: prompts by device and day, newest first.
+const PROMPT_RANGES = [['1', 'Today'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', 'Year'], ['custom', 'Dates…']] as const
+
+function PromptsView({ back }: { back: () => void }) {
+  const [text, setText] = useState('')
+  const [q2, setQ2] = useState('')
+  const [device, setDevice] = useState('')
+  const [project, setProject] = useState('')
+  const [range, setRange] = useState<(typeof PROMPT_RANGES)[number][0]>('30')
+  const [dates, setDates] = useState({ from: '', to: '' })
+  useEffect(() => { const t = setTimeout(() => setQ2(text.trim()), 300); return () => clearTimeout(t) }, [text])
+  const usage = useLoad<DeviceUsage[]>('/device-usage')
+  const labels = useLoad<Overview>('/overview?days=365')
+  const settings = useLoad<SettingRow[]>('/settings')
+  // A device's allowed projects (Devices → Projects); prompts elsewhere are flagged.
+  const allowedOn = (id: string) => (JSON.parse(settings.data?.find((r) => r.scope === 'device' && r.scope_id === id)?.json ?? '{}').allowed_projects ?? []) as string[]
+  // Device names come from the overview (every server version); last-prompt times when the server has them.
+  const devices = (labels.data?.labels.devices ?? []).map((d, chip) => ({ ...d, chip, last_prompt: usage.data?.find((u) => u.id === d.id)?.last_prompt ?? null }))
+  const projects = (labels.data?.labels.projects ?? []).slice().sort((a, b) => (a.display_name ?? a.key).localeCompare(b.display_name ?? b.key))
+  const projectName = (key: string) => projects.find((p) => p.key === key)?.display_name ?? key.split('/').pop() ?? key
+  const dev = (id: string) => devices.find((d) => d.id === id)
+  const when_ = range === 'custom' ? `${dates.from ? `&from=${dates.from}` : ''}${dates.to ? `&to=${dates.to}` : ''}${!dates.from ? '&days=3650' : ''}` : `&days=${range}`
+  const base = `/prompts?${when_.slice(1)}${device ? `&device=${device}` : ''}${project ? `&project=${encodeURIComponent(project)}` : ''}${q2 ? `&q=${encodeURIComponent(q2)}` : ''}`
+  // Newest 50 first; "Load more" asks for the 50 before the oldest shown.
+  const [rows, setRows] = useState<PromptRow[]>([])
+  const [state, setState] = useState<{ loading: boolean; more: boolean; error: string }>({ loading: true, more: false, error: '' })
+  const load = (before?: number) => {
+    setState((s) => ({ ...s, loading: true, error: '' }))
+    api<PromptRow[]>(`${base}${before ? `&before=${before}` : ''}`).then((r) => {
+      setRows((old) => (before ? [...old, ...r] : r))
+      setState({ loading: false, more: r.length >= 50, error: '' })
+    }, (e) => setState({ loading: false, more: false, error: String(e) }))
+  }
+  useEffect(() => { setRows([]); load() }, [base])
+  const groups: [string, PromptRow[]][] = []
+  for (const p of rows) {
+    const label = dayLabel(p.ts)
+    if (groups.at(-1)?.[0] !== label) groups.push([label, []])
+    groups.at(-1)![1].push(p)
+  }
+  const filtered = !!(device || project || q2 || range !== '30')
+  return (
+    <div class="page">
+      <div class="toolbar"><button class="btn" onClick={back}>‹ Settings</button>
+        <input type="search" placeholder="Search prompt text" aria-label="Search prompts" value={text} onInput={(e) => setText(e.currentTarget.value)} style={{ flex: 1 }} /></div>
+      <div class="prompt-filters">
+        <Seg label="When" value={range} options={PROMPT_RANGES} onChange={setRange} />
+        {range === 'custom' && <span class="dates">
+          <input type="date" aria-label="From" value={dates.from} onInput={(e) => setDates({ ...dates, from: e.currentTarget.value })} /> to
+          <input type="date" aria-label="To" value={dates.to} onInput={(e) => setDates({ ...dates, to: e.currentTarget.value })} />
+        </span>}
+        <select aria-label="Project" value={project} onChange={(e) => setProject(e.currentTarget.value)}>
+          <option value="">All projects</option>
+          {projects.map((p) => <option key={p.key} value={p.key}>{p.display_name ?? p.key}</option>)}
+        </select>
+        {filtered && <button class="link-btn" onClick={() => { setDevice(''); setProject(''); setText(''); setRange('30') }}>Clear filters</button>}
+      </div>
+      <div class="chips" role="group" aria-label="Device">
+        <button class="chip-btn" aria-pressed={!device} onClick={() => setDevice('')}>All devices</button>
+        {devices.map((d) => (
+          <button key={d.id} class="chip-btn" aria-pressed={device === d.id} onClick={() => setDevice(d.id)}>
+            <Chip i={d.chip} /> {d.name}{usage.data && <span class="hint" style={{ margin: 0 }}> · last prompt {ago(d.last_prompt)}</span>}
+          </button>
+        ))}
+      </div>
+      {state.error && <p class="err" role="alert">{state.error}</p>}
+      {!state.loading && !rows.length && !state.error && <p class="hint">No prompts found{device ? ' on this device' : ''}{project ? ` in ${projectName(project)}` : ''}{q2 ? ` for "${q2}"` : ''} in this time range.</p>}
+      {groups.map(([label, list]) => (
+        <section key={label} class="section">
+          <h2 class="sticky-day">{label}</h2>
+          <ol class="prompts">
+            {list.map((p) => {
+              const d = dev(p.device_id)
+              const allowed = allowedOn(p.device_id)
+              const outside = allowed.length > 0 && !allowed.includes(p.project_key)
+              // Notes the editor adds by itself (e.g. which file is open), not typed by anyone.
+              const notice = /^\s*<ide_/.test(p.text ?? '')
+              return (
+                <li key={p.id} class={`${outside ? 'outside' : ''} ${notice ? 'notice' : ''}`}>
+                  <span class="prompt-meta num">
+                    <b title={new Date(p.ts).toLocaleString()}>{promptWhen(p.ts)}</b>
+                    {d && <button class="meta-pill" title="Show only this device" onClick={() => setDevice(d.id)}><Chip i={d.chip} /> {d.name}</button>}
+                    <button class="meta-pill" title={`Project: ${p.project_key} (show only this project)`} onClick={() => setProject(p.project_key)}>📁 {projectName(p.project_key)}</button>
+                    <span class="meta-pill static" title="Coding agent"><Mark of="claude" />Claude Code</span>
+                    {outside && <span class="badge bad" title="Not in this computer's allowed projects (Devices)">Outside its projects</span>}
+                    {notice && <span class="badge" title="Added automatically by the editor, not typed">Editor notice</span>}
+                    {p.title && <span class="hint" style={{ margin: 0 }} title="Session">{p.title}</span>}
+                  </span>
+                  {/* Without a search the list shows the first 400 characters of each prompt. */}
+                  <div><Highlight text={p.text ?? ''} />{!q2 && (p.text?.length ?? 0) >= 400 ? '…' : ''}</div>
+                </li>
+              )
+            })}
+          </ol>
+        </section>
+      ))}
+      <div class="actions" style={{ justifyContent: 'center' }}>
+        {state.loading ? <span class="hint">Loading…</span>
+          : state.more ? <button class="btn" onClick={() => load(rows.at(-1)!.ts)}>Load more</button>
+          : rows.length ? <span class="hint">{rows.length} prompt{rows.length > 1 ? 's' : ''} · that's all in this range</span> : null}
+      </div>
+    </div>
+  )
+}
+
+// ---------- Settings ----------
+const TOGGLES = [
+  ['tracking', 'Tracking', 'Pause everything when off.'],
+  ['prompt_text', 'Collect prompt text', 'Off sends that a prompt happened, without its words.'],
+  ['redact_secrets', 'Redact secrets', 'Keys, tokens and passwords are removed before upload.'],
+  ['subagents', 'Subagent usage', ''],
+  ['auto_update', 'Automatic agent updates', ''],
+] as const
+
+function ConnectionGroup({ st, refresh }: { st: Status; refresh: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [conn, setConn] = useState({ server: '', code: '' })
+  const [mode, setMode] = useState<'none' | 'signin' | 'create'>('none')
+  const [f, setF] = useState({ server: '', email: '', password: '', token: '' })
+  const [autostart, setAutostart] = useState(false)
+  const [name, setName] = useState(navigator.userAgent.includes('Mac') ? 'My Mac' : navigator.userAgent.includes('Windows') ? 'My PC' : 'My computer')
+  const [saved, setSaved] = useState<string[]>([])
+  useEffect(() => {
+    isEnabled().then(setAutostart, () => {})
+    invoke<{ saved: string[] } | null>('servers').then((r) => setSaved(r?.saved ?? []))
+  }, [st.server])
+  const run = (fn: () => Promise<unknown>) => async (e?: Event) => {
+    e?.preventDefault(); setBusy(true); setErr('')
+    try { await fn(); setMode('none'); refresh() } catch (x) { setErr(String(x)) } finally { setBusy(false) }
+  }
+  const server = f.server || st.agent_server
+  return (
+    <section class="section">
+      <h2>Connection</h2>
+      <div class="group">
+        <div class="field"><span>This computer</span><span class="val">{st.this_device_connected ? `Connected to ${st.agent_server.replace(/^https?:\/\//, '')}` : 'Not connected'}</span></div>
+        {!st.this_device_connected && !st.signed_in && (
+          <form onSubmit={run(() => invoke('connect_with_code', conn))}>
+            <div class="field"><label for="cs">Server</label><input id="cs" type="url" placeholder="Paste the server address" required value={conn.server} onInput={(e) => setConn({ ...conn, server: e.currentTarget.value })} /></div>
+            <div class="field"><label for="cc">Code</label><input id="cc" type="text" placeholder="6 letters" required maxLength={6} value={conn.code} onInput={(e) => setConn({ ...conn, code: e.currentTarget.value })} /></div>
+            {/* Disclosure, shown once when connecting (owner's prompt collection is their choice; people are told). */}
+            <p class="hint">Usage from this computer, including prompt text if the admin collects it, is sent to this server's admin.</p>
+            <div class="name-row" style={{ justifyContent: 'flex-end' }}><button class="btn primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button></div>
+          </form>
+        )}
+        {!st.this_device_connected && st.signed_in && (
+          <div class="name-row">
+            <input aria-label="Name for this computer" value={name} onInput={(e) => setName(e.currentTarget.value)} />
+            <button class="btn primary" disabled={busy || !name.trim()} onClick={run(() => invoke('add_this_device', { name }))}>{busy ? 'Connecting…' : 'Add this computer'}</button>
+          </div>
+        )}
+        <div class="field"><label for="a">Open at login</label>
+          <input id="a" type="checkbox" checked={autostart} onChange={async (e) => { const on = e.currentTarget.checked; await (on ? enable() : disable()); setAutostart(on) }} /></div>
+        {st.signed_in && mode === 'none' ? (
+          <div class="field">
+            {saved.length > 1 ? (
+              <label>Admin of <select aria-label="Server" value={st.server} onChange={(e) => run(() => invoke('switch_server', { server: e.currentTarget.value }))()}>
+                {saved.map((x) => <option key={x} value={x}>{x.replace(/^https?:\/\//, '')}</option>)}
+              </select></label>
+            ) : <span>Admin · {st.server.replace(/^https?:\/\//, '')}</span>}
+            <span><button class="btn" onClick={() => setMode('signin')}>Add server…</button> <button class="btn" disabled={busy} onClick={run(() => invoke('sign_out'))}>Sign out</button></span>
+          </div>
+        ) : mode === 'none' ? (
+          <div class="field"><span class="val">Admin</span><span><button class="btn" onClick={() => setMode('signin')}>Sign in</button> <button class="btn" onClick={() => setMode('create')}>New server…</button></span></div>
+        ) : (
+          <form onSubmit={run(() => mode === 'signin' ? invoke('sign_in', { server, email: f.email, password: f.password })
+            : invoke('create_admin', { server, token: f.token, email: f.email, password: f.password, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }))}>
+            <div class="field"><label for="s">Server</label><input id="s" type="url" required placeholder="Paste the server address" value={server} onInput={(e) => setF({ ...f, server: e.currentTarget.value })} /></div>
+            {mode === 'create' && <div class="field"><label for="t">Setup token</label><input id="t" type="password" required value={f.token} onInput={(e) => setF({ ...f, token: e.currentTarget.value })} /></div>}
+            <div class="field"><label for="e">Email</label><input id="e" type="email" required value={f.email} onInput={(e) => setF({ ...f, email: e.currentTarget.value })} /></div>
+            <div class="field"><label for="p">Password</label><input id="p" type="password" required minLength={mode === 'create' ? 10 : 1} value={f.password} onInput={(e) => setF({ ...f, password: e.currentTarget.value })} /></div>
+            <div class="name-row" style={{ justifyContent: 'flex-end' }}>
+              <button type="button" class="btn" onClick={() => setMode('none')}>Cancel</button>
+              <button class="btn primary" disabled={busy}>{busy ? 'Working…' : mode === 'signin' ? 'Sign in' : 'Create admin login'}</button>
+            </div>
+          </form>
+        )}
+      </div>
+      {err && <p class="err" role="alert">{err}</p>}
+    </section>
+  )
+}
+
+type SettingRow = { scope: string; scope_id: string; json: string }
+type ToolInfo = { tool: string; label: string; enabled: boolean; devices: unknown[] }
+
+// Admin, on a connected computer: put tracking where only an administrator can change it.
+function LockGroup() {
+  const [st, setSt] = useState<{ locked: boolean; outdated: boolean; supported: boolean } | null>(null)
+  const [opts, setOpts] = useState({ only_ours: false, block_skip: true })
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const load = () => invoke<typeof st>('lock_status').then(setSt, () => {})
+  useEffect(() => { load() }, [])
+  if (!st) return null
+  const run = (cmd: string, args: Record<string, unknown> = {}) => async () => {
+    setBusy(true); setMsg('')
+    try { await invoke(cmd, args); setMsg(cmd === 'lock_computer' ? 'Locked.' : 'Unlocked.') } catch (x) { setMsg(String(x)) } finally { setBusy(false); load() }
+  }
+  return (
+    <section class="section"><h2>Lock this computer</h2>
+      <div class="group">
+        <div class="field"><span>{st.locked ? '🔒 Locked' : 'Not locked'}<div class="hint" style={{ margin: 0 }}>
+          {st.locked ? 'Claude Code always runs DeviceTally\'s hooks here, in every settings folder, terminal and editor. Changing that needs this Mac\'s admin password.'
+            : 'Puts DeviceTally\'s hooks in Claude Code\'s system-wide settings, so tracking can\'t be turned off or bypassed with another settings folder without this Mac\'s admin password.'}</div></span>
+          {st.supported && (st.locked
+            ? <span>{st.outdated && <button class="btn primary" disabled={busy} onClick={run('lock_computer', opts)}>Update lock</button>} <button class="btn" disabled={busy} onClick={run('unlock_computer')}>Unlock…</button></span>
+            : <button class="btn primary" disabled={busy} onClick={run('lock_computer', opts)}>{busy ? 'Waiting for the password…' : 'Lock…'}</button>)}
+        </div>
+        {st.outdated && <div class="field"><span class="warn">The locked tracker is older than this app. Update the lock to use the new one.</span></div>}
+        {!st.locked && st.supported && <>
+          <div class="field"><label for="lk1">Block "skip permissions" mode<div class="hint" style={{ margin: 0 }}>Claude Code won't start with --dangerously-skip-permissions.</div></label>
+            <input id="lk1" type="checkbox" checked={opts.block_skip} onChange={(e) => setOpts({ ...opts, block_skip: e.currentTarget.checked })} /></div>
+          <div class="field"><label for="lk2">Only DeviceTally's hooks<div class="hint" style={{ margin: 0 }}>Hooks the person adds themselves won't run.</div></label>
+            <input id="lk2" type="checkbox" checked={opts.only_ours} onChange={(e) => setOpts({ ...opts, only_ours: e.currentTarget.checked })} /></div>
+        </>}
+        {!st.supported && <div class="field"><span class="hint" style={{ margin: 0 }}>Available on macOS for now.</span></div>}
+      </div>
+      <p class="hint">Works fully when the person uses a standard (not administrator) Mac account and doesn't know the admin password. Also keeps Claude Code's transcripts for a year. macOS asks for an administrator's password.</p>
+      {msg && <p class="hint" role="status">{msg}</p>}
+    </section>
+  )
+}
+
+function AdminSettings({ openPrompts }: { openPrompts: () => void }) {
+  const rows = useLoad<SettingRow[]>('/settings')
+  const tools = useLoad<ToolInfo[]>('/tools')
+  const me = useLoad<{ timezone: string }>('/auth/me')
+  const devices = useLoad<Device[]>('/devices')
+  const [msg, setMsg] = useState('')
+  const global = JSON.parse(rows.data?.find((r) => r.scope === 'global')?.json ?? '{}')
+  const save = async (patch: object) => {
+    try { await api('/settings/global', 'PUT', { ...global, ...patch }); rows.reload(); tools.reload(); setMsg('Saved') } catch (x) { setMsg(String(x)) }
+  }
+  const [del, setDel] = useState({ scope: 'device', id: '', from: '', to: '' })
+  const [delConfirm, setDelConfirm] = useState<string | null>(null)
+  const doDelete = async () => {
+    try { const r = await api<{ deleted: boolean }>('/data/delete', 'POST', del); setMsg(r.deleted ? 'Deleted.' : 'Nothing matched.'); setDelConfirm(null) } catch (x) { setMsg(String(x)) }
+  }
+  const zones = (Intl as any).supportedValuesOf?.('timeZone') as string[] | undefined
+  return (
+    <>
+      <section class="section"><h2>Tracking (all devices)</h2>
+        <div class="group">
+          {TOGGLES.map(([k, l, h]) => (
+            <div class="field" key={k}><label for={`g-${k}`}>{l}{h && <div class="hint" style={{ margin: 0 }}>{h}</div>}</label>
+              <input id={`g-${k}`} type="checkbox" checked={global[k] ?? true} onChange={(e) => save({ [k]: e.currentTarget.checked })} /></div>
+          ))}
+          <div class="field"><label for="keep">Keep prompt text for</label>
+            <select id="keep" value={String(global.keep_prompts_days === null ? 'forever' : global.keep_prompts_days ?? 90)} onChange={(e) => save({ keep_prompts_days: e.currentTarget.value === 'forever' ? null : Number(e.currentTarget.value) })}>
+              {[30, 90, 180, 365].map((d) => <option key={d} value={d}>{d} days</option>)}<option value="forever">Forever</option>
+            </select></div>
+        </div>
+      </section>
+      <section class="section"><h2>Other AI tools</h2>
+        <div class="group">
+          {(tools.data ?? []).map((t) => (
+            <div class="field" key={t.tool}><label for={`t-${t.tool}`}>{t.label}<div class="hint" style={{ margin: 0 }}>{t.devices.length ? `Found on ${t.devices.length} device${t.devices.length > 1 ? 's' : ''}` : 'Not found yet'}</div></label>
+              <input id={`t-${t.tool}`} type="checkbox" checked={t.enabled} onChange={(e) => save({ tools: { ...(global.tools ?? {}), [t.tool]: e.currentTarget.checked } })} /></div>
+          ))}
+        </div>
+      </section>
+      <section class="section"><h2>Data</h2>
+        <div class="group">
+          <div class="field"><label for="tz">Time zone</label>
+            <select id="tz" value={me.data?.timezone} onChange={async (e) => { await api('/owner/timezone', 'PUT', { timezone: e.currentTarget.value }); me.reload(); setMsg('Saved') }}>
+              {[...new Set([me.data?.timezone ?? 'UTC', ...(zones ?? [])])].map((z) => <option key={z} value={z}>{z}</option>)}
+            </select></div>
+          <div class="field"><span>Export</span><span>
+            <button class="btn" onClick={async () => setMsg(`Saved to ${await invoke<string>('save_export', { format: 'json' })}`)}>JSON</button>{' '}
+            <button class="btn" onClick={async () => setMsg(`Saved to ${await invoke<string>('save_export', { format: 'csv' })}`)}>Daily CSV</button></span></div>
+          <div class="field"><span>Delete</span><span style={{ display: 'flex', gap: 6 }}>
+            <select aria-label="Delete what" value={del.scope} onChange={(e) => setDel({ ...del, scope: e.currentTarget.value })}><option value="device">Device</option><option value="range">Dates</option></select>
+            {del.scope === 'device' ? (
+              <select aria-label="Device" value={del.id} onChange={(e) => setDel({ ...del, id: e.currentTarget.value })}>
+                <option value="">Choose…</option>{(devices.data ?? []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            ) : (
+              <><input type="date" aria-label="From" value={del.from} onInput={(e) => setDel({ ...del, from: e.currentTarget.value })} /><input type="date" aria-label="To" value={del.to} onInput={(e) => setDel({ ...del, to: e.currentTarget.value })} /></>
+            )}
+            <button class="btn" disabled={del.scope === 'device' ? !del.id : !(del.from && del.to)} onClick={() => setDelConfirm('')}>Delete…</button></span></div>
+          {delConfirm !== null && <div class="field"><span>This permanently deletes the selected data. Type DELETE to confirm.</span><span class="inline-confirm">
+            <input aria-label="Type DELETE" value={delConfirm} onInput={(e) => setDelConfirm(e.currentTarget.value)} />
+            <button class="btn danger" disabled={delConfirm !== 'DELETE'} onClick={doDelete}>Delete</button><button class="btn" onClick={() => setDelConfirm(null)}>Cancel</button></span></div>}
+          <div class="field"><span>Prompts</span><button class="btn" onClick={openPrompts}>View prompts…</button></div>
+          <div class="field"><span>Sign out on every computer</span><button class="btn" onClick={async () => { await api('/auth/logout-everywhere', 'POST', {}); location.reload() }}>Sign out everywhere</button></div>
+        </div>
+      </section>
+      <DeleteEverything />
+      {msg && <p class="hint" role="status">{msg}</p>}
+    </>
+  )
+}
+
+/** Admin, stopping DeviceTally: delete the server and database in Cloudflare and the tracking here. */
+function DeleteEverything() {
+  const [open, setOpen] = useState(false)
+  const [token, setToken] = useState('')
+  const [confirmText, setConfirm] = useState('')
+  const [log, setLog] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    const un = listen<string>('setup-progress', (e) => setLog((l) => [...l, e.payload]))
+    return () => { un.then((f) => f()) }
+  }, [])
+  const go = async (e: Event) => {
+    e.preventDefault(); setBusy(true); setErr(''); setLog([])
+    try { await invoke('delete_server', { cfToken: token }); location.reload() } catch (x) { setErr(String(x)) } finally { setBusy(false) }
+  }
+  return (
+    <section class="section"><h2>Stop using DeviceTally</h2>
+      <div class="group">
+        {!open ? (
+          <div class="field"><span>Delete your server, its database and all usage in Cloudflare, and remove tracking from this computer.</span><button class="btn danger" onClick={() => setOpen(true)}>Delete DeviceTally…</button></div>
+        ) : (
+          <form onSubmit={go} style={{ padding: '8px 0' }}>
+            <p style={{ marginTop: 0 }}>This can't be undone. Export your data first if you want a copy. Other computers stop syncing; remove the app from them by dragging it to the Bin.</p>
+            <ol class="ob-list">
+              <li>Open Cloudflare's token page, signed in to the account where DeviceTally runs.<OpenLink url={TOKEN_URL} label="Open Cloudflare's token page" /></li>
+              <li>Click <b>Continue to summary</b>, <b>Create Token</b>, then <b>Copy</b> and paste it here. It's used once and not stored.</li>
+            </ol>
+            <input class="ob-input" type="password" aria-label="Cloudflare token" placeholder="Paste the token" required value={token} onInput={(e) => setToken(e.currentTarget.value)} disabled={busy} />
+            <input class="ob-input" aria-label="Type DELETE to confirm" placeholder="Type DELETE to confirm" value={confirmText} onInput={(e) => setConfirm(e.currentTarget.value)} disabled={busy} />
+            {busy && <ul class="ob-progress" aria-live="polite">{log.map((l, i) => <li key={i}>{i < log.length - 1 ? '✓' : '…'} {l}</li>)}</ul>}
+            {err && <p class="err" role="alert">{err}</p>}
+            <div class="actions"><button type="button" class="btn" onClick={() => setOpen(false)} disabled={busy}>Cancel</button><button class="btn danger" disabled={busy || !token.trim() || confirmText !== 'DELETE'}>{busy ? 'Deleting…' : 'Delete everything'}</button></div>
+            <p class="hint">Afterwards, drag DeviceTally from Applications to the Bin to remove the app itself.</p>
+          </form>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function DeviceSettings({ st, refresh }: { st: Status; refresh: () => void }) {
+  const [autostart, setAutostart] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  useEffect(() => { isEnabled().then(setAutostart, () => {}) }, [])
+  // The admin decides: this computer can only ask. Once approved, it can remove DeviceTally here.
+  const [req, setReq] = useState<{ requested_at: number | null } | 'approved'>({ requested_at: null })
+  const [confirmRemove, setConfirmRemove] = useState(false)
+  const loadReq = () => api<{ requested_at: number | null }>('/disconnect-request').then(setReq, (e) => { if (String(e) === 'signed_out') setReq('approved'); else setErr(`Couldn't check the request: ${e}`) })
+  useEffect(() => { loadReq() }, [])
+  const run = (fn: () => Promise<unknown>) => async () => {
+    setBusy(true); setErr('')
+    try { await fn(); await loadReq() } catch (x) { setErr(String(x)) } finally { setBusy(false) }
+  }
+  const remove = run(async () => { await invoke('disconnect_this_computer'); refresh() })
+  return (
+    <section class="section"><h2>This computer</h2>
+      <div class="group">
+        <div class="field"><span>Connected to</span><span class="val">{st.agent_server.replace(/^https?:\/\//, '')}</span></div>
+        <div class="field"><label for="a">Open at login</label>
+          <input id="a" type="checkbox" checked={autostart} onChange={async (e) => { const on = e.currentTarget.checked; await (on ? enable() : disable()); setAutostart(on) }} /></div>
+        {req === 'approved' ? (
+          <div class="field"><span>The admin disconnected this computer.<div class="hint" style={{ margin: 0 }}>Removing tracking deletes DeviceTally's hooks here. Usage already sent stays on the server.</div></span>
+            {confirmRemove ? <span class="inline-confirm"><button class="btn danger" disabled={busy} onClick={remove}>Remove</button><button class="btn" onClick={() => setConfirmRemove(false)}>Cancel</button></span>
+              : <button class="btn" onClick={() => setConfirmRemove(true)}>Remove tracking…</button>}</div>
+        ) : req.requested_at ? (
+          <div class="field"><span>✓ Request sent {ago(req.requested_at)}.<div class="hint" style={{ margin: 0 }}>The admin sees it under Devices. This computer keeps tracking until they approve.</div></span><button class="btn" disabled={busy} onClick={run(() => api('/disconnect-request', 'DELETE'))}>Cancel request</button></div>
+        ) : (
+          <div class="field"><span>Stop tracking<div class="hint" style={{ margin: 0 }}>The admin approves this from their Devices list.</div></span><button class="btn" disabled={busy} onClick={run(() => api('/disconnect-request', 'POST', {}))}>Ask the admin to disconnect…</button></div>
+        )}
+      </div>
+      {err && <p class="err" role="alert">{err}</p>}
+    </section>
+  )
+}
+
+// Admin: keep the server on the same version as this app (servers created by the app have no
+// checked-out code for `npm run update`). Needs a Cloudflare token again; it isn't stored.
+const newer = (a: string, b: string) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false }
+
+/** Paste a Cloudflare token, update the server, show progress. Used in Settings and in the banner. */
+function UpdateServerForm({ close, done }: { close: () => void; done: () => void }) {
+  const [token, setToken] = useState('')
+  const [log, setLog] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    const un = listen<string>('setup-progress', (e) => setLog((l) => [...l, e.payload]))
+    return () => { un.then((f) => f()) }
+  }, [])
+  const update = async (e: Event) => {
+    e.preventDefault(); setBusy(true); setLog([]); setErr('')
+    try { await invoke('update_server', { cfToken: token }); setToken(''); done() } catch (x) { setErr(String(x)) } finally { setBusy(false) }
+  }
+  return (
+    <form onSubmit={update} style={{ padding: '8px 0' }}>
+      <ol class="ob-list">
+        <li>Open Cloudflare's token page, signed in to the account where DeviceTally runs.<OpenLink url={TOKEN_URL} label="Open Cloudflare's token page" /></li>
+        <li>Click <b>Continue to summary</b>, <b>Create Token</b>, then <b>Copy</b> and paste it here. It's used once and not stored.</li>
+      </ol>
+      <input class="ob-input" type="password" aria-label="Cloudflare token" placeholder="Paste the token" required value={token} onInput={(e) => setToken(e.currentTarget.value)} disabled={busy} />
+      {busy && <ul class="ob-progress" aria-live="polite">{log.map((l, i) => <li key={i}>{i < log.length - 1 ? '✓' : '…'} {l}</li>)}</ul>}
+      {err && <p class="err" role="alert">{err}</p>}
+      <div class="actions" style={{ marginTop: 8 }}><button type="button" class="btn" onClick={close} disabled={busy}>Cancel</button><button class="btn primary" disabled={busy || !token.trim()}>{busy ? 'Updating…' : 'Update server'}</button></div>
+    </form>
+  )
+}
+
+function ServerGroup() {
+  const meta = useLoad<{ version: string }>('/meta')
+  const [bundled, setBundled] = useState('')
+  const [open, setOpen] = useState(false)
+  const [msg, setMsg] = useState('')
+  useEffect(() => { invoke<string>('bundled_server_version').then(setBundled) }, [])
+  // A server too old to answer /meta is outdated too.
+  const outdated = !!bundled && (meta.error ? true : !!meta.data && newer(bundled, meta.data.version))
+  return (
+    <section class="section"><h2>Server</h2>
+      <div class="group">
+        <div class="field"><span>Server version</span><span class="val">{meta.data?.version ?? (meta.error ? 'older version' : '…')}{outdated ? ` · ${bundled} available` : meta.data ? ' · up to date' : ''}</span></div>
+        {!open && <div class="field"><span>{outdated ? `Update to ${bundled}` : 'Reinstall the server code'}</span><button class={outdated ? 'btn primary' : 'btn'} onClick={() => { setOpen(true); setMsg('') }}>Update server…</button></div>}
+        {open && <UpdateServerForm close={() => setOpen(false)} done={() => { setOpen(false); setMsg('Server updated.'); meta.reload(); window.dispatchEvent(new Event('dt:server-updated')) }} />}
+      </div>
+      {msg && <p class="hint" role="status">{msg}</p>}
+    </section>
+  )
+}
+
+// ---------- Menu bar (every computer: it's this computer's menu bar) ----------
+type ItemStyle = { label: '' | 'text' | 'icon' | 'inside' | 'none'; color: string; label_color: string; scale: number; layout: '' | 'row' | 'stacked' | 'top' }
+type ClockCfg = { hour12: boolean; ampm: boolean; weekday: boolean; day: boolean; month: boolean }
+type MenuBarCfg = { items: string[]; layout: 'row' | 'stacked' | 'top'; size: string; spacing: string; labels: boolean; net_stack: boolean; scale: number; gap: number
+  gap_pt: number | null; weight: 'regular' | 'medium' | 'bold'; font: string; label_color: string; value_color: string
+  styles: Record<string, ItemStyle>; clock: ClockCfg; max_width: number; status_dot: boolean
+  alerts: { done_banner: boolean; done_sound: string; done_sound_on: boolean; wait_banner: boolean; wait_sound: string; wait_sound_on: boolean; min_seconds: number; disk: boolean } }
+/** One alert event: notification on/off, sound on/off, which sound (▶ to hear it), and a test. */
+function AlertRow({ title, hint, banner, soundOn, sound, onBanner, onSoundOn, onSound, test }: {
+  title: string; hint: string; banner: boolean; soundOn: boolean; sound: string
+  onBanner: (v: boolean) => void; onSoundOn: (v: boolean) => void; onSound: (v: string) => void; test: () => void
+}) {
+  const [sounds, setSounds] = useState<string[]>([])
+  const [sent, setSent] = useState(false)
+  useEffect(() => { invoke<string[]>('list_sounds').then(setSounds, () => {}) }, [])
+  return (
+    <div class="field alert-row">
+      <span>{title}<div class="hint" style={{ margin: 0 }}>{hint}</div></span>
+      <span class="alert-ctl">
+        <label><input type="checkbox" checked={banner} onChange={(e) => onBanner(e.currentTarget.checked)} /> Notification</label>
+        <label><input type="checkbox" checked={soundOn} onChange={(e) => onSoundOn(e.currentTarget.checked)} /> Sound</label>
+        <select aria-label={`${title}: sound`} disabled={!soundOn} value={sound} onChange={(e) => { onSound(e.currentTarget.value); invoke('preview_sound', { name: e.currentTarget.value }) }}>
+          {(sounds.includes(sound) || !sound ? sounds : [sound, ...sounds]).map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <button class="btn" title="Hear the sound" disabled={!soundOn} onClick={() => invoke('preview_sound', { name: sound })}>▶</button>
+        <button class="btn" disabled={!banner && !soundOn} onClick={() => { test(); setSent(true); setTimeout(() => setSent(false), 3000) }}>{sent ? 'Sent ✓' : 'Send a test'}</button>
+      </span>
+    </div>
+  )
+}
+const COLORS: [string, string][] = [['', 'Menu bar colour'], ['#ffffff', 'White'], ['#34c759', 'Green'], ['#0a84ff', 'Blue'], ['#ff9f0a', 'Orange'], ['#ff453a', 'Red'], ['#bf5af2', 'Purple'], ['#ffd60a', 'Yellow']]
+const presetScale = (c: MenuBarCfg) => c.scale > 0 ? c.scale : c.size === 'tiny' ? 0.85 : c.size === 'normal' ? 1.2 : 1
+const presetGap = (c: MenuBarCfg) => c.gap_pt != null ? c.gap_pt : c.gap > 0 ? c.gap : c.spacing === 'tight' ? 3 : c.spacing === 'loose' ? 9 : 5.5
+const MB_ITEMS: [string, string][] = [['agent', 'Agent status'], ['tokens', 'Tokens today'], ['net', 'Network ↑ ↓'], ['cpu', 'CPU'], ['temp', 'CPU temperature'], ['mem', 'Memory'], ['disk', 'Disk free'], ['battery', 'Battery'], ['clock', 'Clock']]
+// Same keys as FONTS in menubar.rs (fonts every Mac has).
+const FONTS: [string, string, string][] = [
+  ['system', 'System (SF Pro)', 'system-ui'], ['rounded', 'SF Pro Rounded', 'ui-rounded'], ['mono', 'SF Mono', 'ui-monospace'],
+  ['newyork', 'New York', 'ui-serif'],
+  ['helvetica', 'Helvetica Neue', 'Helvetica Neue'], ['menlo', 'Menlo', 'Menlo'], ['monaco', 'Monaco', 'Monaco'],
+  ['din', 'DIN Alternate', 'DIN Alternate'], ['futura', 'Futura', 'Futura'], ['avenir', 'Avenir', 'Avenir'],
+  ['georgia', 'Georgia', 'Georgia'], ['verdana', 'Verdana', 'Verdana'],
+]
+const NO_STYLE: ItemStyle = { label: '', color: '', label_color: '', scale: 0, layout: '' }
+
+function ColorPick({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) {
+  return (
+    <span class="swatches" role="radiogroup" aria-label={label}>
+      {COLORS.map(([c, n]) => c ? (
+        <button key={n} type="button" role="radio" aria-checked={value === c} title={n} aria-label={n} class="swatch" style={{ background: c }} onClick={() => onChange(c)} />
+      ) : (
+        <button key={n} type="button" role="radio" aria-checked={value === c} title="Follows the menu bar: black in light mode, white in dark mode" class="swatch-auto" onClick={() => onChange(c)}>Auto</button>
+      ))}
+      {/* Any colour: a rainbow circle (filled with the colour once one is picked) over the system picker. */}
+      <label class="swatch swatch-any" data-on={String(!COLORS.some(([c]) => c === value))} title="Any colour" style={!COLORS.some(([c]) => c === value) ? { background: value } : undefined}>
+        <input type="color" aria-label={`${label}: any colour`} value={value || '#ffffff'} onChange={(e) => onChange(e.currentTarget.value)} />
+      </label>
+    </span>
+  )
+}
+
+/** Base64 RGBA pixels (2x) → an image at real size. */
+const toUrl = (b64: string, w: number, h: number) => {
+  const bin = atob(b64), px = new Uint8ClampedArray(bin.length)
+  for (let i = 0; i < bin.length; i++) px[i] = bin.charCodeAt(i)
+  const c = document.createElement('canvas'); c.width = w; c.height = h
+  c.getContext('2d')!.putImageData(new ImageData(px, w, h), 0, 0)
+  return c.toDataURL()
+}
+
+type PreviewImg = { width: number; height: number; light?: string; dark?: string; hidden?: number; text: string }
+
+/** The menu-bar item as drawn, on a light and a dark bar. At most one render is in flight, so a
+ *  slider being dragged never queues up stale frames; the latest value always wins. */
+function Preview({ cfg }: { cfg: MenuBarCfg }) {
+  const [img, setImg] = useState<{ light: string; dark: string; w: number; h: number; hidden: number } | { text: string } | null>(null)
+  const want = useRef(cfg), busy = useRef(false), alive = useRef(true)
+  const pump = () => {
+    if (busy.current || !alive.current) return
+    busy.current = true
+    const asked = want.current
+    invoke<PreviewImg>('menubar_preview', { cfg: asked }).then((r) => {
+      if (!alive.current) return
+      setImg(r.width && r.light && r.dark ? { light: toUrl(r.light, r.width, r.height), dark: toUrl(r.dark, r.width, r.height), w: r.width, h: r.height, hidden: r.hidden ?? 0 } : { text: r.text })
+    }, () => {}).finally(() => { busy.current = false; if (want.current !== asked) pump() })
+  }
+  useEffect(() => { want.current = cfg; pump() }, [cfg])
+  useEffect(() => { alive.current = true; const t = setInterval(pump, 2000); return () => { alive.current = false; clearInterval(t) } }, [])
+  if (!img) return <div class="mb-preview"><div class="mb-bar light" /><div class="mb-bar dark" /></div>
+  if ('text' in img) return <p class="hint">{cfg.items.length ? img.text : 'Nothing is shown: only the DeviceTally icon appears. Turn on an item on the left.'}</p>
+  const size = { width: `${img.w / 2}px`, height: `${img.h / 2}px` }
+  return (
+    <div class="mb-preview">
+      <div class="mb-bar light"><img alt="Menu bar preview, light" src={img.light} style={size} /></div>
+      <div class="mb-bar dark"><img alt="Menu bar preview, dark" src={img.dark} style={size} /></div>
+      <span class="hint" style={{ margin: 0 }}>Real size · {Math.round(img.w / 2)} pt wide
+        {img.hidden > 0 && <b class="warn"> · {img.hidden} item{img.hidden > 1 ? 's' : ''} at the end left out to fit the maximum width (General)</b>}</span>
+    </div>
+  )
+}
+
+/** A slider row: shows the value while dragging, calls `live` on every move and `save` on release. */
+function Slider({ id, label, hint, min, max, step, value, fmt, live, save, reset }: {
+  id: string; label: string; hint?: string; min: number; max: number; step: number; value: number; fmt: (v: number) => string
+  live: (v: number) => void; save: (v: number) => void; reset?: () => void
+}) {
+  return (
+    <div class="field"><label for={id}>{label}{hint && <div class="hint" style={{ margin: 0 }}>{hint}</div>}</label>
+      <span class="slider"><input id={id} type="range" min={min} max={max} step={step} value={value}
+        onInput={(e) => live(Number(e.currentTarget.value))} onChange={(e) => save(Number(e.currentTarget.value))} />
+        <b class="num">{fmt(value)}</b>{reset && <button class="link-btn" onClick={reset}>Reset</button>}</span></div>
+  )
+}
+
+const LABEL_OPTS: Record<string, [ItemStyle['label'], string][]> = {
+  clock: [['', 'None'], ['icon', 'Icon']],
+  agent: [['', 'Pill'], ['icon', 'Icon + text'], ['none', 'Dot']],
+  net: [['', 'Default'], ['text', 'Arrows'], ['none', 'None']],
+  battery: [['', 'Default'], ['text', 'Text'], ['icon', 'Icon'], ['inside', 'In icon'], ['none', 'None']],
+}
+const ITEM_HINT: Record<string, string> = {
+  agent: 'What your coding agents are doing: working, needs you (a permission or question), done (until you open DeviceTally from the menu bar) or idle. Claude Code and Codex.',
+  tokens: "Today's tokens across your tracked accounts.",
+  net: 'Upload and download speed of this computer.',
+  cpu: 'How busy the processor is.',
+  temp: 'The hottest CPU sensor. Not every computer reports one; then nothing shows.',
+  mem: 'Memory in use.',
+  disk: 'Free space on the system disk. Turns orange at 80% full and red at 90%.',
+  battery: '"In icon" shows the percentage inside the battery, like the iPhone.',
+  clock: 'Time, and optionally the day and date.',
+}
+
+/** One item's settings. Every value here is the item's own: nothing is inherited from elsewhere. */
+function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c: MenuBarCfg) => void; live: (c: MenuBarCfg) => void }) {
+  const name = MB_ITEMS.find((x) => x[0] === k)![1]
+  const on = cfg.items.includes(k)
+  const st = { ...NO_STYLE, ...cfg.styles?.[k] }
+  const with_ = (patch: Partial<ItemStyle>) => ({ ...cfg, styles: { ...cfg.styles, [k]: { ...st, ...patch } } })
+  const i = cfg.items.indexOf(k)
+  const move = (d: number) => {
+    const items = [...cfg.items]; [items[i], items[i + d]] = [items[i + d], items[i]]
+    save({ ...cfg, items })
+  }
+  const c = cfg.clock
+  const clock = (patch: Partial<ClockCfg>) => save({ ...cfg, clock: { ...c, ...patch } })
+  const layout = st.layout || 'row'
+  const insideBattery = k === 'battery' && st.label === 'inside'
+  return (
+    <div class="mb-pane">
+      <div class="mb-pane-head">
+        <div><h2 style={{ margin: 0 }}>{name}</h2><span class="hint" style={{ margin: 0 }}>{ITEM_HINT[k]}</span></div>
+        <label class="switch"><input type="checkbox" checked={on} onChange={() => save({ ...cfg, items: on ? cfg.items.filter((x) => x !== k) : [...cfg.items, k] })} /> Show in menu bar</label>
+      </div>
+      {on ? <>
+        <div class="group">
+          <div class="field"><span>Position</span><span>
+            <button class="btn" disabled={i <= 0} onClick={() => move(-1)}>‹ Move left</button>{' '}
+            <button class="btn" disabled={i >= cfg.items.length - 1} onClick={() => move(1)}>Move right ›</button></span></div>
+          <div class="field"><span>Label</span><Seg label="Label" value={st.label} options={LABEL_OPTS[k] ?? [['', 'Default'], ['text', 'Text'], ['icon', 'Icon'], ['none', 'None']]} onChange={(v) => save(with_({ label: v }))} /></div>
+          {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field"><span>Layout</span><Seg label="Layout" value={layout} options={[['row', 'Side by side'], ['stacked', 'Stacked'], ['top', 'Label on top']] as const} onChange={(v) => save(with_({ layout: v }))} /></div>}
+          {k === 'net' && <div class="field"><label for="mbn">Upload over download<div class="hint" style={{ margin: 0 }}>One narrow column instead of two side by side.</div></label>
+            <input id="mbn" type="checkbox" checked={cfg.net_stack} onChange={(e) => save({ ...cfg, net_stack: e.currentTarget.checked })} /></div>}
+          <Slider id={`sz-${k}`} label="Size" min={70} max={140} step={5} value={Math.round((st.scale || 1) * 100)} fmt={(v) => `${v}%`}
+            live={(v) => live(with_({ scale: v / 100 }))} save={(v) => save(with_({ scale: v / 100 }))} reset={st.scale && st.scale !== 1 ? () => save(with_({ scale: 0 })) : undefined} />
+          {k !== 'agent' && <div class="field"><span>{insideBattery ? 'Battery colour' : 'Number colour'}</span><ColorPick label="Number colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
+          {k === 'agent' && st.label === 'icon' && <div class="field"><span>Text colour</span><ColorPick label="Text colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
+          {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field"><span>{k === 'clock' ? 'Icon colour' : 'Label colour'}</span><ColorPick label="Label colour" value={st.label_color} onChange={(v) => save(with_({ label_color: v }))} /></div>}
+        </div>
+        {k === 'clock' && <div class="group" style={{ marginTop: 10 }}>
+          <div class="field"><span>Hours</span><Seg label="Hours" value={c.hour12 ? '12' : '24'} options={[['24', '24-hour'], ['12', '12-hour']] as const} onChange={(v) => clock({ hour12: v === '12' })} /></div>
+          {c.hour12 && <div class="field"><label for="ck-ampm">Show AM/PM</label><input id="ck-ampm" type="checkbox" checked={c.ampm} onChange={(e) => clock({ ampm: e.currentTarget.checked })} /></div>}
+          <div class="field"><span>Also show</span><span class="checks">
+            <label><input type="checkbox" checked={c.weekday} onChange={(e) => clock({ weekday: e.currentTarget.checked })} /> Day (Sat)</label>
+            <label><input type="checkbox" checked={c.day} onChange={(e) => clock({ day: e.currentTarget.checked })} /> Date (4)</label>
+            <label><input type="checkbox" checked={c.month} onChange={(e) => clock({ month: e.currentTarget.checked })} /> Month (Oct)</label>
+          </span></div>
+        </div>}
+        {k === 'agent' && <p class="hint">The colours show the state: orange working, red needs you, green done, grey idle. Notifications and sounds: <b>Agent status and alerts</b> on the left.</p>}
+        {k !== 'agent' && <p class="hint"><b>Auto</b> colour follows the menu bar: black in light mode, white in dark mode.{(k === 'battery' || k === 'clock') && " Using DeviceTally's? You can hide macOS's own in System Settings → Control Center."}</p>}
+      </> : <p class="hint">Turn on "Show in menu bar" to add it. It goes at the end; move it from here.</p>}
+    </div>
+  )
+}
+
+/** Settings shared by every item: how big, how far apart, how wide in total, and the typeface. */
+function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCfg) => void; live: (c: MenuBarCfg) => void }) {
+  return (
+    <div class="mb-pane">
+      <div class="mb-pane-head"><div><h2 style={{ margin: 0 }}>General</h2><span class="hint" style={{ margin: 0 }}>For every item. Each item's own look is under its name.</span></div></div>
+      <div class="group">
+        <Slider id="mbs" label="Text size" min={70} max={130} step={5} value={Math.round(presetScale(cfg) * 100)} fmt={(v) => `${v}%`}
+          live={(v) => live({ ...cfg, scale: v / 100 })} save={(v) => save({ ...cfg, scale: v / 100 })} />
+        <Slider id="mbg" label="Spacing between items" min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`}
+          live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
+        <Slider id="mbw" label="Maximum width" hint="macOS hides a menu-bar item that doesn't fit, so items at the end are left out instead." min={80} max={600} step={10} value={cfg.max_width || 360} fmt={(v) => `${v} pt`}
+          live={(v) => live({ ...cfg, max_width: v })} save={(v) => save({ ...cfg, max_width: v })} />
+        <div class="field"><span>Weight</span><Seg label="Weight" value={cfg.weight} options={[['regular', 'Regular'], ['medium', 'Medium'], ['bold', 'Bold']] as const} onChange={(v) => save({ ...cfg, weight: v })} /></div>
+        <div class="field"><label for="mbf">Font</label>
+          <select id="mbf" value={cfg.font} onChange={(e) => save({ ...cfg, font: e.currentTarget.value })}>
+            {FONTS.map(([k, l, css]) => <option key={k} value={k} style={{ fontFamily: css }}>{l}</option>)}
+          </select></div>
+        <div class="field"><label for="mbl">Labels when an item says "Default"<div class="hint" style={{ margin: 0 }}>T, CPU, MEM, arrows; spelled out with Label on top.</div></label>
+          <input id="mbl" type="checkbox" checked={cfg.labels} onChange={(e) => save({ ...cfg, labels: e.currentTarget.checked })} /></div>
+      </div>
+    </div>
+  )
+}
+
+function AlertsPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCfg) => void; live: (c: MenuBarCfg) => void }) {
+  const a = cfg.alerts
+  const set = (patch: Partial<MenuBarCfg['alerts']>) => save({ ...cfg, alerts: { ...a, ...patch } })
+  return (
+    <div class="mb-pane">
+      <div class="mb-pane-head"><div><h2 style={{ margin: 0 }}>Agent status and alerts</h2><span class="hint" style={{ margin: 0 }}>Know when a coding agent finishes or needs you, while you work in another window.</span></div></div>
+      <div class="group">
+        <div class="field"><span>In the menu bar<div class="hint" style={{ margin: 0 }}>Show it with the <b>Agent status</b> item (on the left): a pill, an icon with text, or a dot.</div></span>
+          <label class="switch"><input type="checkbox" checked={cfg.items.includes('agent')} onChange={(e) => save({ ...cfg, items: e.currentTarget.checked ? ['agent', ...cfg.items.filter((x) => x !== 'agent')] : cfg.items.filter((x) => x !== 'agent') })} /> Show</label></div>
+        <AlertRow title="When a task finishes" hint="Claude Code and Codex" banner={a.done_banner} soundOn={a.done_sound_on} sound={a.done_sound}
+          onBanner={(v) => set({ done_banner: v })} onSoundOn={(v) => set({ done_sound_on: v })} onSound={(v) => set({ done_sound: v })} test={() => invoke('test_alert', { waiting: false })} />
+        <AlertRow title="When an agent needs you" hint="Claude Code asks for a permission or answer" banner={a.wait_banner} soundOn={a.wait_sound_on} sound={a.wait_sound}
+          onBanner={(v) => set({ wait_banner: v })} onSoundOn={(v) => set({ wait_sound_on: v })} onSound={(v) => set({ wait_sound: v })} test={() => invoke('test_alert', { waiting: true })} />
+        <Slider id="mbmin" label="Skip short tasks" hint={'No "finished" alert for tasks quicker than this, so quick replies don\'t ping you.'} min={0} max={300} step={5} value={a.min_seconds} fmt={(v) => (v ? `${v} s` : 'Off')}
+          live={(v) => live({ ...cfg, alerts: { ...a, min_seconds: v } })} save={(v) => set({ min_seconds: v })} />
+        <div class="field"><label for="mbdk">Disk filling up<div class="hint" style={{ margin: 0 }}>A notification at 80% and 90% full.</div></label>
+          <input id="mbdk" type="checkbox" checked={a.disk} onChange={(e) => set({ disk: e.currentTarget.checked })} /></div>
+      </div>
+      <p class="hint">Notifications are normal Mac notifications from DeviceTally (change their style in System Settings → Notifications → DeviceTally). With the notification on, its sound plays with it and follows Focus / Do Not Disturb; a sound without a notification always plays. Your own sounds: put .aiff, .wav or .m4a files in ~/Library/Sounds.</p>
+      <p class="hint">Claude Code (terminal, VS Code and other editors): working, needs you and done. Codex: done.</p>
+    </div>
+  )
+}
+
+/** Menu bar tab: preview on top, sections on the left (like Stats), the selected one on the right. */
+function MenuBarTab() {
+  const [cfg, setCfg] = useState<MenuBarCfg | null>(null)
+  const [sel, setSel] = useState('general')
+  const liveBusy = useRef(false), liveWant = useRef<MenuBarCfg | null>(null)
+  useEffect(() => {
+    invoke<MenuBarCfg>('get_menubar').then((c) => {
+      // Older versions had a layout and colours "for every item" that silently overrode each
+      // item's Auto; move them into the items once, so every value on screen is the real one.
+      // The old "status dot" switch becomes the Agent status item (first in the menu bar).
+      if (c.status_dot) {
+        c = { ...c, status_dot: false, items: c.items.includes('agent') ? c.items : ['agent', ...c.items] }
+        invoke('set_menubar', { cfg: c })
+      }
+      if (c.value_color || c.label_color || (c.layout && c.layout !== 'row')) {
+        const styles = { ...c.styles }
+        for (const [k] of MB_ITEMS) {
+          const st = { ...NO_STYLE, ...styles[k] }
+          styles[k] = { ...st, color: st.color || c.value_color, label_color: st.label_color || c.label_color, layout: st.layout || (c.layout !== 'row' ? c.layout : '') }
+        }
+        c = { ...c, styles, value_color: '', label_color: '', layout: 'row' }
+        invoke('set_menubar', { cfg: c })
+      }
+      setCfg(c)
+    })
+  }, [])
+  if (!cfg) return null
+  const save = (next: MenuBarCfg) => { setCfg(next); liveWant.current = null; invoke('set_menubar', { cfg: next }) }
+  // While dragging: the real menu bar follows too (not saved until release), one update at a time.
+  const live = (next: MenuBarCfg) => {
+    setCfg(next)
+    liveWant.current = next
+    const pump = () => {
+      if (liveBusy.current || !liveWant.current) return
+      liveBusy.current = true
+      const c = liveWant.current
+      invoke('set_menubar_live', { cfg: c }).finally(() => { liveBusy.current = false; if (liveWant.current && liveWant.current !== c) pump() })
+    }
+    pump()
+  }
+  const shown = cfg.items.map((k) => MB_ITEMS.find((x) => x[0] === k)!).filter(Boolean)
+  const hidden = MB_ITEMS.filter(([k]) => !cfg.items.includes(k))
+  const toggle = (k: string) => save({ ...cfg, items: cfg.items.includes(k) ? cfg.items.filter((x) => x !== k) : [...cfg.items, k] })
+  const NavItem = ({ k, l, on }: { k: string; l: string; on?: boolean }) => (
+    <div class={`mb-nav-item ${sel === k ? 'active' : ''}`}>
+      <button class="mb-nav-btn" onClick={() => setSel(k)}>{l}</button>
+      {on !== undefined && <input type="checkbox" aria-label={`Show ${l}`} title={on ? 'Shown in the menu bar' : 'Not shown'} checked={on} onChange={() => toggle(k)} />}
+    </div>
+  )
+  return (
+    <div class="page mb-page">
+      <div class="mb-top"><Preview cfg={cfg} /></div>
+      <div class="mb-layout">
+        <nav class="mb-nav" aria-label="Menu bar sections">
+          <NavItem k="general" l="General" />
+          <NavItem k="alerts" l="Agent status and alerts" />
+          <div class="mb-nav-h">In the menu bar, left to right</div>
+          {shown.map(([k, l]) => <NavItem key={k} k={k} l={l} on />)}
+          {!shown.length && <div class="hint" style={{ margin: '2px 8px' }}>Nothing yet</div>}
+          {hidden.length > 0 && <div class="mb-nav-h">Not shown</div>}
+          {hidden.map(([k, l]) => <NavItem key={k} k={k} l={l} on={false} />)}
+        </nav>
+        {sel === 'general' ? <GeneralPane cfg={cfg} save={save} live={live} />
+          : sel === 'alerts' ? <AlertsPane cfg={cfg} save={save} live={live} />
+          : <ItemPane k={sel} cfg={cfg} save={save} live={live} />}
+      </div>
+    </div>
+  )
+}
+
+function SettingsTab({ st, refresh, signIn }: { st: Status; refresh: () => void; signIn?: boolean }) {
+  const [prompts, setPrompts] = useState(false)
+  const [adminSignIn, setAdminSignIn] = useState(!!signIn)
+  if (prompts && st.signed_in) return <PromptsView back={() => setPrompts(false)} />
+  if (!st.signed_in) {
+    return (
+      <div class="page">
+        {adminSignIn ? <div class="embedded-signin"><SignIn back={() => setAdminSignIn(false)} done={refresh} /></div> : (
+          <section class="section"><h2>Admin</h2>
+            <div class="group"><div class="field">
+              <span>Not signed in. This window shows this computer only.</span>
+              <button class="btn primary" onClick={() => setAdminSignIn(true)}>Sign in as admin…</button>
+            </div></div>
+          </section>
+        )}
+        {st.this_device_connected && <DeviceSettings st={st} refresh={refresh} />}
+        <AppGroup />
+      </div>
+    )
+  }
+  return (
+    <div class="page">
+      <ConnectionGroup st={st} refresh={refresh} />
+      <ServerGroup />
+      {st.this_device_connected && <LockGroup />}
+      <AppGroup />
+      <AdminSettings openPrompts={() => setPrompts(true)} />
+    </div>
+  )
+}
+
+// ---------- Storage (this computer, read-only) ----------
+type StorageItem = { group: string; name: string; about: string; risk: '' | 'safe' | 'caution' | 'risky'; path: string; bytes: number; trash: boolean }
+
+/** Move to Bin, with a warning that grows with the risk: a click for safe caches, ticking "I
+ *  understand" for caution, and typing the name for risky ones. */
+function TrashConfirm({ item, done, cancel }: { item: StorageItem; done: () => void; cancel: () => void }) {
+  const [ok, setOk] = useState(false)
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const ready = item.risk === 'safe' || (ok && (item.risk !== 'risky' || typed.trim() === item.name))
+  const go = async () => {
+    setBusy(true); setErr('')
+    try { await invoke('trash_path', { path: item.path }); done() } catch (x) { setErr(String(x)); setBusy(false) }
+  }
+  return (
+    <div class="trash-confirm" role="alertdialog" aria-label={`Move ${item.name} to the Bin`}>
+      <p style={{ margin: 0 }}><b>Move "{item.name}" ({gbText(item.bytes)}) to the Bin?</b> You can put it back from the Bin until you empty it; the space is freed only then.
+        {' '}DeviceTally can't undo this and isn't responsible for anything you remove, so make sure nothing you need is inside. {item.risk === 'safe' ? 'This is a cache that rebuilds itself.' : item.about}</p>
+      {item.risk !== 'safe' && <label><input type="checkbox" checked={ok} onChange={(e) => setOk(e.currentTarget.checked)} /> I understand{item.risk === 'risky' ? ' this may hold my own data' : ' this may need a large re-download'}</label>}
+      {item.risk === 'risky' && <input aria-label="Type the name to confirm" placeholder={`Type "${item.name}" to confirm`} value={typed} onInput={(e) => setTyped(e.currentTarget.value)} />}
+      {err && <p class="err" role="alert">{err}</p>}
+      <span><button class="btn danger" disabled={!ready || busy} onClick={go}>{busy ? 'Moving…' : 'Move to Bin'}</button> <button class="btn" onClick={cancel}>Cancel</button></span>
+    </div>
+  )
+}
+const gbText = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`)
+const RISK = { safe: ['Safe', 'Rebuilds or re-downloads by itself'], caution: ['Caution', 'Large re-download, or may hold things you made'], risky: ['Risky', 'May hold your own data'] } as const
+let lastScan: { at: number; items: StorageItem[] } | null = null // kept while the window is open
+
+function StorageTab() {
+  const [scan, setScan] = useState(lastScan)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [disk, setDisk] = useState<{ free: number; total: number } | null>(null)
+  const [copied, setCopied] = useState('')
+  const [trashing, setTrashing] = useState('')
+  const [moved, setMoved] = useState('')
+  useEffect(() => { invoke<{ disk_free: number; disk_total: number }>('system_stats').then((s) => setDisk({ free: s.disk_free, total: s.disk_total }), () => {}) }, [])
+  const run = async () => {
+    setBusy(true); setErr('')
+    try { lastScan = { at: Date.now(), items: await invoke<StorageItem[]>('storage_scan') }; setScan(lastScan) } catch (x) { setErr(String(x)) } finally { setBusy(false) }
+  }
+  const used = disk && disk.total ? (disk.total - disk.free) / disk.total : 0
+  const groups = ['AI tools', 'Developer caches', 'Biggest folders']
+  return (
+    <div class="page">
+      {disk && (
+        <section class="section"><h2>This computer's disk</h2>
+          <div class="disk-head num"><b>{gbText(disk.free)}</b> free of {gbText(disk.total)} · {Math.round(used * 100)}% used</div>
+          <div class="track disk-track" aria-hidden="true"><div class={used >= 0.9 ? 'full' : used >= 0.8 ? 'high' : ''} style={{ width: `${used * 100}%` }} /></div>
+        </section>
+      )}
+      <div class="toolbar">
+        <button class="btn primary" disabled={busy} onClick={run}>{busy ? 'Scanning… (up to a minute)' : scan ? 'Scan again' : 'Scan this computer'}</button>
+        <span class="hint" style={{ margin: 0 }}>{scan ? `Scanned ${ago(scan.at)}` : 'Finds what AI tools, developer caches and big folders take up.'}</span>
+      </div>
+      {err && <p class="err" role="alert">{err}</p>}
+      {moved && <div class="banner" role="status"><span>✓ "{moved}" is in the Bin. Empty the Bin to free the space (or put it back from there).</span><button class="btn" onClick={() => setMoved('')}>OK</button></div>}
+      {scan && groups.map((g) => {
+        const rows = scan.items.filter((i) => i.group === g)
+        if (!rows.length) return null
+        return (
+          <section class="section" key={g}>
+            <h2>{g} <span class="hint" style={{ margin: 0, fontWeight: 400 }}>· {gbText(rows.reduce((a, r) => a + r.bytes, 0))}{g === 'Biggest folders' ? ' (overlaps the lists above)' : ''}</span></h2>
+            <div class="group">
+              {rows.map((r) => (
+                <Fragment key={r.path}><div class="storage-row">
+                  <div class="storage-main">
+                    <div><b>{r.name}</b>{r.risk && <span class={`risk ${r.risk}`} title={RISK[r.risk][1]}>{RISK[r.risk][0]}</span>}</div>
+                    {r.about && <div class="hint" style={{ margin: 0 }}>{r.about}</div>}
+                    <button class="path" title="Copy the path" onClick={() => navigator.clipboard.writeText(r.path).then(() => setCopied(r.path))}>{r.path}{copied === r.path ? '  ✓ copied' : ''}</button>
+                  </div>
+                  <b class="num storage-size">{gbText(r.bytes)}</b>
+                  <span class="storage-actions">
+                    <button class="btn" onClick={() => invoke('reveal_path', { path: r.path })}>Show in Finder</button>
+                    {r.trash && <button class="btn" onClick={() => setTrashing(r.path)}>Move to Bin…</button>}
+                  </span>
+                </div>
+                {trashing === r.path && <TrashConfirm item={r} cancel={() => setTrashing('')} done={() => {
+                  setTrashing(''); setMoved(r.name)
+                  if (scan) { lastScan = { ...scan, items: scan.items.filter((x) => x.path !== r.path) }; setScan(lastScan) }
+                }} />}
+                </Fragment>
+              ))}
+            </div>
+          </section>
+        )
+      })}
+      {scan && <p class="hint">Move to Bin is offered for caches only, never for your documents, app data or the Claude Code transcripts DeviceTally reads. For anything else, use Show in Finder, or a cleaner such as <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-opener').then((m) => m.openUrl('https://github.com/bysiber/cleardisk')) }}>ClearDisk</a> (free), which also moves things to the Bin first. "Safe" items rebuild themselves; check "Risky" ones carefully.</p>}
+    </div>
+  )
+}
+
+// ---------- Window shell ----------
+// Admin: the app carries a newer server than the one running? Say so plainly, with the fix.
+function ServerBanner() {
+  const [state, setState] = useState<{ server: string; bundled: string } | null>(null)
+  const [open, setOpen] = useState(false)
+  const [done, setDone] = useState(false)
+  useEffect(() => {
+    invoke<string>('bundled_server_version').then((b) =>
+      api<{ version: string }>('/meta').then((m) => setState({ server: m.version, bundled: b }), () => setState({ server: '', bundled: b })))
+    // Updated from Settings → Server: the banner goes away.
+    const hide = () => setState(null)
+    window.addEventListener('dt:server-updated', hide)
+    return () => window.removeEventListener('dt:server-updated', hide)
+  }, [])
+  if (done) return <div class="banner" role="status"><span>✓ Server updated. Reopen a tab to load it.</span><button class="btn" onClick={() => location.reload()}>Reload</button></div>
+  if (!state || (state.server && !newer(state.bundled, state.server))) return null
+  return (
+    <div class="banner" role="status">
+      <div style={{ flex: 1 }}>
+        <span>{state.server ? `Your server is version ${state.server}; this app needs ${state.bundled}.` : `Your server is older than this app (${state.bundled}).`} Some screens can't load until it's updated.</span>
+        {open && <UpdateServerForm close={() => setOpen(false)} done={() => setDone(true)} />}
+      </div>
+      {!open && <button class="btn primary" onClick={() => setOpen(true)}>Update server…</button>}
+    </div>
+  )
+}
+
+export function AppTitle() {
+  const [v, setV] = useState('')
+  useEffect(() => { import('@tauri-apps/api/app').then((m) => m.getVersion()).then(setV, () => {}) }, [])
+  return <span class="app-title"><img src="/icon.png" alt="" width={18} height={18} /> DeviceTally{v && <span class="hint" style={{ margin: 0 }}>{v}</span>}</span>
+}
+
+export function MainWindow() {
+  const [st, setSt] = useState<Status | null>(null)
+  const [tab, setTab] = useState(new URLSearchParams(location.search).get('tab') ?? 'overview')
+  const [signIn, setSignIn] = useState(false)
+  const refresh = () => invoke<Status>('status').then((s) => { setSt(s); if (s.signed_in) setSignIn(false) })
+  useEffect(() => {
+    refresh()
+    const on = (e: Event) => setTab((e as CustomEvent<string>).detail)
+    window.addEventListener('dt:tab', on)
+    return () => window.removeEventListener('dt:tab', on)
+  }, [])
+  if (!st) return <div class="main" />
+  const admin = st.signed_in
+  const connected = admin || st.this_device_connected
+  if (!connected) return <div class="main"><Onboarding done={refresh} /></div>
+  const tabs: [string, string][] = admin
+    ? [['overview', 'Overview'], ['sessions', 'Sessions'], ['devices', 'Devices'], ['menubar', 'Menu bar'], ['storage', 'Storage'], ['settings', 'Settings']]
+    : [['overview', 'My usage'], ['sessions', 'Sessions'], ['menubar', 'Menu bar'], ['storage', 'Storage'], ['settings', 'Settings']]
+  const current = tabs.some(([k]) => k === tab) ? tab : tabs[0][0]
+  return (
+    <div class="main">
+      <nav class="tabs" role="tablist">
+        <AppTitle />
+        {tabs.map(([k, l]) => <button key={k} role="tab" aria-selected={current === k} onClick={() => setTab(k)}>{l}</button>)}
+        {!admin && <button class="btn tab-signin" onClick={() => { setSignIn(true); setTab('settings') }}>Sign in as admin</button>}
+      </nav>
+      {admin && <ServerBanner />}
+      <main key={`${current}-${admin}`}>
+        {current === 'overview' && <OverviewTab admin={admin} />}
+        {current === 'sessions' && <SessionsTab admin={admin} />}
+        {current === 'devices' && <DevicesTab server={st.server} />}
+        {current === 'storage' && <StorageTab />}
+        {current === 'menubar' && <MenuBarTab />}
+        {current === 'settings' && <SettingsTab key={String(signIn)} st={st} refresh={refresh} signIn={signIn} />}
+      </main>
+    </div>
+  )
+}

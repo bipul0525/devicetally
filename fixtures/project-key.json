@@ -1,0 +1,28 @@
+{
+ "cases": [
+  [
+   "https://github.com/Me/Repo.git",
+   "github.com/Me/Repo"
+  ],
+  [
+   "git@github.com:Me/Repo.git",
+   "github.com/Me/Repo"
+  ],
+  [
+   "ssh://git@GitHub.com:22/Me/Repo",
+   "github.com/Me/Repo"
+  ],
+  [
+   "https://user:token@gitlab.example.com/group/sub/proj.git",
+   "gitlab.example.com/group/sub/proj"
+  ],
+  [
+   "https://github.com/Me/Repo/",
+   "github.com/Me/Repo"
+  ],
+  [
+   "not a url",
+   ""
+  ]
+ ]
+}

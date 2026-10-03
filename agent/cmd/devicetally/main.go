@@ -1,0 +1,535 @@
+// Command devicetally is the DeviceTally agent: Claude Code hooks call it, and it uploads usage
+// to your own DeviceTally server.
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"devicetally/agent/internal/activity"
+	"devicetally/agent/internal/health"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+
+	"devicetally/agent/internal/filter"
+	"devicetally/agent/internal/hooks"
+	"devicetally/agent/internal/schedule"
+	"devicetally/agent/internal/spawn"
+	"devicetally/agent/internal/state"
+	"devicetally/agent/internal/syncer"
+	"devicetally/agent/internal/update"
+)
+
+// Version is set at build time: -ldflags "-X main.Version=1.2.3".
+var Version = "0.1.0"
+
+const usage = `devicetally: Claude Code usage tracking for your own DeviceTally server
+
+  devicetally enroll <server-url> <code>   Connect this device (code from Devices -> Add device)
+  devicetally status                      Show connection, last sync and paused state
+  devicetally sync                        Upload new usage now
+  devicetally pause | resume              Stop / restart tracking on this device
+  devicetally update [--rollback]         Install the latest release (checksum-verified), or undo the last update
+  devicetally uninstall                   Remove the hooks and this device's local data
+  devicetally version
+`
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Print(usage)
+		os.Exit(2)
+	}
+	var err error
+	switch os.Args[1] {
+	case "hook":
+		hook() // never fails visibly: Claude Code must not be affected
+		return
+	case "codex-notify":
+		codexNotify() // run by Codex after each finished turn
+		return
+	case "sync":
+		err = syncCmd()
+	case "enroll":
+		err = enroll(os.Args[2:])
+	case "status":
+		err = status()
+	case "pause", "resume":
+		err = setPaused(os.Args[1] == "pause")
+	case "uninstall":
+		err = uninstall()
+	case "update":
+		err = updateCmd(len(os.Args) > 2 && os.Args[2] == "--rollback")
+	case "version":
+		fmt.Println(Version)
+	default:
+		fmt.Print(usage)
+		os.Exit(2)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "devicetally:", err)
+		os.Exit(1)
+	}
+}
+
+// hook runs inside Claude Code. It only does local work (~1 ms) and starts a detached sync.
+func hook() {
+	defer func() { recover() }()
+	var in struct {
+		Event          string `json:"hook_event_name"`
+		SessionID      string `json:"session_id"`
+		PromptID       string `json:"prompt_id"`
+		TranscriptPath string `json:"transcript_path"`
+	}
+	b, _ := io.ReadAll(io.LimitReader(os.Stdin, 4<<20))
+	json.Unmarshal(b, &in)
+	// What this session is doing now, for the app's menu-bar status dot.
+	var h activity.Hook
+	json.Unmarshal(b, &h)
+	activity.Record(activity.Dir(state.Dir()), h, time.Now().UnixMilli())
+	if in.Event == "Notification" {
+		return
+	}
+	if in.Event == "UserPromptSubmit" {
+		e := syncer.Event{PromptID: in.PromptID, SessionID: in.SessionID, Account: syncer.CurrentAccount(claudeDirOf(in.TranscriptPath)), TS: time.Now().UnixMilli()}
+		line, _ := json.Marshal(e)
+		os.MkdirAll(state.Dir(), 0o700)
+		if f, err := os.OpenFile(state.EventsFile(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			f.Write(append(line, '\n'))
+			f.Close()
+		}
+		return
+	}
+	spawn.Detached("sync")
+}
+
+// codexNotify records a finished Codex turn for the menu-bar Agent status. Codex passes a JSON
+// argument: {"type":"agent-turn-complete","thread-id":…,"cwd":…}.
+func codexNotify() {
+	defer func() { recover() }()
+	if len(os.Args) < 3 {
+		return
+	}
+	var in struct {
+		Type   string `json:"type"`
+		Thread string `json:"thread-id"`
+		Cwd    string `json:"cwd"`
+	}
+	json.Unmarshal([]byte(os.Args[len(os.Args)-1]), &in)
+	if in.Type != "agent-turn-complete" {
+		return
+	}
+	id := in.Thread
+	if id == "" {
+		id = "codex"
+	}
+	activity.Record(activity.Dir(state.Dir()), activity.Hook{Event: "Stop", SessionID: "codex-" + id, Cwd: in.Cwd, Tool: "codex"}, time.Now().UnixMilli())
+}
+
+func codexConfig() string {
+	if d := os.Getenv("CODEX_HOME"); d != "" {
+		return filepath.Join(d, "config.toml")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codex", "config.toml")
+}
+
+// claudeDirOf finds the config folder from a transcript path (<dir>/projects/<project>/<session>.jsonl).
+func claudeDirOf(transcript string) string {
+	if i := strings.LastIndex(filepath.ToSlash(transcript), "/projects/"); i > 0 {
+		return transcript[:i]
+	}
+	return state.ClaudeDirs()[0]
+}
+
+func client(st *state.State) *syncer.Client {
+	return &syncer.Client{Server: st.Server, Key: st.DeviceKey, Version: Version}
+}
+
+func syncCmd() error {
+	lock, ok := state.TryLock()
+	if !ok {
+		state.MarkDirty() // the running sync will go round once more
+		return nil
+	}
+	defer lock.Unlock()
+	// Keep the hooks current (adds ones introduced by an update, e.g. Notification); no-op otherwise.
+	// Locked (hooks in Claude Code's system-wide settings): the user-level copies would run twice.
+	locked := hooks.ManagedHasOurs(hooks.ManagedPath())
+	if exe := installedPath(); fileExists(exe) {
+		if st, err := state.Load(); err == nil && st.DeviceKey != "" {
+			for _, d := range state.ClaudeDirs() {
+				if locked {
+					hooks.Uninstall(filepath.Join(d, "settings.json"))
+				} else {
+					hooks.Install(filepath.Join(d, "settings.json"), exe)
+				}
+			}
+			hooks.InstallCodex(codexConfig(), exe)
+		}
+	}
+	activity.Prune(activity.Dir(state.Dir()), time.Now().UnixMilli())
+	for {
+		st, err := state.Load()
+		if err != nil {
+			return err
+		}
+		if st.DeviceKey == "" {
+			return fmt.Errorf("not enrolled: run `devicetally enroll <server-url> <code>`")
+		}
+		c := client(st)
+		cfg, err := syncer.Run(st, c, state.ClaudeDirs())
+		if err == nil {
+			// Other AI tools never block Claude Code's sync; their error is kept separately.
+			st.ToolsError = ""
+			if terr := syncer.RunTools(st, c, cfg); terr != nil {
+				st.ToolsError = terr.Error()
+			}
+			scheduleTools(st, len(syncer.Enabled(cfg)) > 0)
+		}
+		st.LastSync = time.Now()
+		writeHealth(st, locked)
+		if err != nil {
+			st.LastError = err.Error()
+		} else {
+			st.LastError = ""
+		}
+		st.Save()
+		if err != nil {
+			return err
+		}
+		if !state.TakeDirty() {
+			autoUpdate(st)
+			return nil
+		}
+	}
+}
+
+// writeHealth records tracking gaps for the app's check-in (see internal/health).
+func writeHealth(st *state.State, locked bool) {
+	if st.Seen == nil {
+		st.Seen = map[string]int64{}
+	}
+	removed := health.TrackRemoved(st.Offsets, st.Seen, time.Now())
+	h := health.Health{At: time.Now().UnixMilli(), Hooks: "missing", Removed: removed, Agent: Version}
+	if locked {
+		h.Hooks = "locked"
+	} else {
+		for _, d := range state.ClaudeDirs() {
+			if hooks.UserHasOurs(filepath.Join(d, "settings.json")) {
+				h.Hooks = "user"
+			}
+		}
+	}
+	home, _ := os.UserHomeDir()
+	h.ConfigDirs = health.ConfigDirs(home)
+	health.Write(state.Dir(), h, health.Read(state.Dir()).Removed)
+}
+
+// scheduleTools keeps a 5-minute sync scheduled exactly while some other AI tool is tracked
+// (those tools have no hooks to trigger a sync).
+func scheduleTools(st *state.State, want bool) {
+	if want == st.ToolsScheduled || os.Getenv("DEVICETALLY_NO_SCHEDULE") != "" { // the latter for tests
+		return
+	}
+	var err error
+	if want {
+		err = schedule.Install(installedPath())
+	} else {
+		err = schedule.Remove()
+	}
+	if err == nil {
+		st.ToolsScheduled = want
+	} else {
+		st.ToolsError = err.Error()
+	}
+}
+
+func installedPath() string {
+	name := "devicetally"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(state.Dir(), "bin", name)
+}
+
+// autoUpdate checks for a newer release at most once a day, unless the device's settings turn it off.
+func autoUpdate(st *state.State) {
+	if time.Since(st.LastUpdateTry) < 24*time.Hour {
+		return
+	}
+	st.LastUpdateTry = time.Now()
+	st.Save()
+	cfg, err := client(st).Config()
+	if err != nil || cfg.ReleaseRepo == "" || !filter.Resolve(cfg.Settings, "", st.DeviceID, "").AutoUpdate {
+		return
+	}
+	if rel, err := latestRelease(st, cfg); err == nil && update.Newer(rel.Version, Version) {
+		update.Install(rel, installedPath())
+	}
+}
+
+// latestRelease prefers the server's cached copy and falls back to GitHub.
+func latestRelease(st *state.State, cfg *syncer.Config) (*update.Release, error) {
+	if cfg.AgentLatest != "" {
+		return update.FromServer(st.Server, cfg.AgentLatest), nil
+	}
+	return update.Latest(cfg.ReleaseRepo)
+}
+
+func updateCmd(rollback bool) error {
+	if rollback {
+		if err := update.Rollback(installedPath()); err != nil {
+			return err
+		}
+		fmt.Println("Restored the previous version.")
+		return nil
+	}
+	st, err := state.Load()
+	if err != nil {
+		return err
+	}
+	cfg, err := client(st).Config()
+	if err != nil {
+		return err
+	}
+	if cfg.ReleaseRepo == "" {
+		return fmt.Errorf("your server does not name a release repo (RELEASE_REPO); update by replacing the binary at %s", installedPath())
+	}
+	rel, err := latestRelease(st, cfg)
+	if err != nil {
+		return err
+	}
+	if !update.Newer(rel.Version, Version) {
+		fmt.Println("Already up to date:", Version)
+		return nil
+	}
+	if err := update.Install(rel, installedPath()); err != nil {
+		return err
+	}
+	fmt.Printf("Updated %s -> %s (checksum verified). Undo with `devicetally update --rollback`.\n", Version, rel.Version)
+	return nil
+}
+
+func enroll(args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("usage: devicetally enroll <server-url> <code>")
+	}
+	server, code := strings.TrimRight(args[0], "/"), strings.ToUpper(args[1])
+	exe, err := install()
+	if err != nil {
+		return err
+	}
+
+	body := map[string]any{"code": code, "os": runtime.GOOS, "arch": runtime.GOARCH, "agent_version": Version}
+	if a := syncer.CurrentAccount(state.ClaudeDirs()[0]); a != nil {
+		if ask(fmt.Sprintf("Track Claude account %s?", a.Email)) {
+			body["account"] = a
+		}
+	} else {
+		fmt.Println("No Claude account is signed in yet. Approve it in the DeviceTally app (Accounts) once you sign in.")
+	}
+	b, _ := json.Marshal(body)
+	res, err := (&http.Client{Timeout: 15 * time.Second}).Post(server+"/api/v1/enroll", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("enroll failed (%s): the code may be wrong, used or expired. Make a new one in the DeviceTally app (Devices, Add device)", res.Status)
+	}
+	var out struct {
+		DeviceID  string `json:"device_id"`
+		DeviceKey string `json:"device_key"`
+		Name      string `json:"device_name"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return err
+	}
+
+	st, err := state.Load()
+	if err != nil {
+		return err
+	}
+	st.Server, st.DeviceID, st.DeviceKey, st.Paused = server, out.DeviceID, out.DeviceKey, false
+	if err := st.Save(); err != nil {
+		return err
+	}
+	for _, d := range state.ClaudeDirs() {
+		if _, err := hooks.Install(filepath.Join(d, "settings.json"), exe); err != nil {
+			return err
+		}
+	}
+	linkOnPath(exe)
+	if out.Name == "" {
+		out.Name = "This device"
+	}
+	// Import existing history now, so the one message at the end means it is really done.
+	fmt.Print("Connecting...")
+	if err := syncCmd(); err != nil {
+		spawn.Detached("sync")
+		fmt.Printf("\r\033[K✓ %s is connected. History will finish uploading in the background.\n", out.Name)
+		return nil
+	}
+	fmt.Printf("\r\033[K✓ %s is connected.\n", out.Name)
+	return nil
+}
+
+// linkOnPath makes `devicetally` runnable by name: a symlink in the first writable folder already on PATH
+// (macOS/Linux). Returns the link, or "" when there is none (Windows, or no writable PATH folder).
+func linkOnPath(exe string) string {
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	home, _ := os.UserHomeDir()
+	onPath := map[string]bool{}
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		onPath[filepath.Clean(d)] = true
+	}
+	// Fixed preference order: never another tool's folder or a temporary per-shell one, never sudo.
+	for _, dir := range []string{filepath.Join(home, ".local", "bin"), filepath.Join(home, "bin"), "/opt/homebrew/bin", "/usr/local/bin"} {
+		if !onPath[dir] {
+			continue
+		}
+		link := filepath.Join(dir, "devicetally")
+		if cur, err := os.Readlink(link); err == nil && cur == exe {
+			return link
+		}
+		if _, err := os.Lstat(link); err == nil {
+			continue // something else is there: leave it alone
+		}
+		if os.Symlink(exe, link) == nil {
+			return link
+		}
+	}
+	return ""
+}
+
+// unlinkFromPath removes links that point at our binary.
+func unlinkFromPath(exe string) {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		link := filepath.Join(dir, "devicetally")
+		if cur, err := os.Readlink(link); err == nil && cur == exe {
+			os.Remove(link)
+		}
+	}
+}
+
+// install copies the running binary into the agent folder, so hooks keep working if the download moves.
+func install() (string, error) {
+	src, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	name := "devicetally"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dst := filepath.Join(state.Dir(), "bin", name)
+	if s, _ := filepath.EvalSymlinks(src); s == dst {
+		return dst, nil
+	}
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return "", err
+	}
+	tmp := dst + ".new"
+	if err := os.WriteFile(tmp, b, 0o700); err != nil {
+		return "", err
+	}
+	return dst, os.Rename(tmp, dst)
+}
+
+func ask(q string) bool {
+	if fi, _ := os.Stdin.Stat(); fi == nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return true // not interactive (piped installer): default yes
+	}
+	fmt.Print(q + " [Y/n] ")
+	l, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	l = strings.ToLower(strings.TrimSpace(l))
+	return l == "" || l == "y" || l == "yes"
+}
+
+func status() error {
+	st, err := state.Load()
+	if err != nil {
+		return err
+	}
+	if st.DeviceKey == "" {
+		fmt.Println("Not enrolled.")
+		return nil
+	}
+	var pending int64
+	for p, off := range st.Offsets {
+		if fi, err := os.Stat(p); err == nil && fi.Size() > off {
+			pending += fi.Size() - off
+		}
+	}
+	fmt.Printf("Server:     %s\nDevice:     %s\nAgent:      %s\nTracking:   %s\n", st.Server, st.DeviceID, Version, map[bool]string{true: "paused", false: "on"}[st.Paused])
+	if st.LastSync.IsZero() {
+		fmt.Println("Last sync:  never")
+	} else {
+		fmt.Println("Last sync: ", st.LastSync.Format(time.RFC1123))
+	}
+	if st.LastError != "" {
+		fmt.Println("Last error:", st.LastError)
+	}
+	fmt.Printf("Waiting:    %d KB in %d transcripts tracked\n", pending/1024, len(st.Offsets))
+	if len(st.ToolsTracked) > 0 {
+		fmt.Printf("Other tools: tracking %s (synced every 5 minutes)\n", strings.Join(st.ToolsTracked, ", "))
+	} else if len(st.ToolsSeen) > 0 {
+		fmt.Printf("Other tools: %s found, not tracked (turn on in the DeviceTally app: Settings, Other AI tools)\n", strings.Join(st.ToolsSeen, ", "))
+	}
+	if st.ToolsError != "" {
+		fmt.Println("Tools error:", st.ToolsError)
+	}
+	return nil
+}
+
+func setPaused(p bool) error {
+	st, err := state.Load()
+	if err != nil {
+		return err
+	}
+	st.Paused = p
+	if err := st.Save(); err != nil {
+		return err
+	}
+	if p {
+		fmt.Println("Paused. Nothing from this device is uploaded until `devicetally resume`.")
+	} else {
+		fmt.Println("Tracking resumed.")
+	}
+	return nil
+}
+
+func uninstall() error {
+	for _, d := range state.ClaudeDirs() {
+		p := filepath.Join(d, "settings.json")
+		if changed, err := hooks.Uninstall(p); err != nil {
+			return err
+		} else if changed {
+			fmt.Println("Hooks removed from", p, "(backup saved next to it)")
+		}
+	}
+	if changed, _ := hooks.UninstallCodex(codexConfig()); changed {
+		fmt.Println("Agent status removed from", codexConfig())
+	}
+	unlinkFromPath(installedPath())
+	schedule.Remove()
+	if err := os.RemoveAll(state.Dir()); err != nil {
+		return err
+	}
+	fmt.Println("Removed", state.Dir()+". Disconnect this device in the DeviceTally app (Devices) to finish.")
+	return nil
+}
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

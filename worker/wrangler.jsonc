@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "devicetally",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-22",
+  "d1_databases": [
+    { "binding": "DB", "database_name": "devicetally", "migrations_dir": "migrations" }
+  ],
+  // GitHub "owner/repo" whose releases agents install and update from.
+  "vars": { "RELEASE_REPO": "bipul0525/devicetally" },
+  "triggers": { "crons": ["17 3 * * *"] },
+  "observability": { "enabled": true }
+}

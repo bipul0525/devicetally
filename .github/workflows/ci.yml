@@ -1,0 +1,67 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  agent:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - if: hashFiles('agent/go.mod') != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+      - if: hashFiles('agent/go.mod') != ''
+        run: go vet ./...
+      - if: hashFiles('agent/go.mod') != ''
+        run: go test ./...
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - if: hashFiles('worker/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - if: hashFiles('worker/package.json') != ''
+        run: npm ci
+      - if: hashFiles('worker/package.json') != ''
+        run: npm test
+      - if: hashFiles('worker/package.json') != ''
+        run: npx tsc --noEmit
+      # Catches what tests can't, e.g. the runtime rejecting non-handler exports from the main module.
+      - if: hashFiles('worker/package.json') != ''
+        run: npx wrangler deploy --dry-run --outdir dist
+
+  installers:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Render installers
+        run: node --experimental-strip-types -e "import('./worker/src/install.ts').then(async (m) => { const fs = await import('node:fs'); fs.writeFileSync('i.sh', await m.installScript('https://x.dev/i/K7XR4M', 'curl', 'me/devicetally').text()); fs.writeFileSync('i.ps1', await m.installScript('https://x.dev/i/K7XR4M.ps1', 'curl', 'me/devicetally').text()) })"
+      - if: runner.os == 'Linux'
+        run: shellcheck -s sh i.sh
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/i.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors; exit 1 }
