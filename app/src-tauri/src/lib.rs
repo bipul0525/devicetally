@@ -1888,6 +1888,10 @@ pub fn run() {
                 });
             }
             std::thread::spawn(update_tracker);
+            // `npm run try` (local testing): open the main window right away, so it's clear the app is up.
+            if std::env::var("DEVICETALLY_OPEN_WINDOW").is_ok() {
+                let _ = show_main(&handle, "overview");
+            }
             // Connectivity checks every 2 s while a Network item is in the menu bar or its panel was
             // looked at in the last 15 s (one small connection to 1.1.1.1, like Stats).
             let h4 = handle.clone();
