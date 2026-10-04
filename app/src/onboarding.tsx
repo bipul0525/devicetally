@@ -190,6 +190,8 @@ export function SignIn({ back, done }: { back: () => void; done: () => void }) {
 
 export function Onboarding({ done }: { done: () => void }) {
   const [path, setPath] = useState<'choose' | 'setup' | 'join' | 'signin'>('choose')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
   if (path === 'setup') return <Setup back={() => setPath('choose')} done={done} />
   if (path === 'join') return <Join back={() => setPath('choose')} done={done} />
   if (path === 'signin') return <SignIn back={() => setPath('choose')} done={done} />
@@ -207,7 +209,11 @@ export function Onboarding({ done }: { done: () => void }) {
         <button class="ob-card" onClick={() => setPath('signin')}>
           <strong>Sign in as admin</strong><span>You already have a server and want to manage it from here.</span>
         </button>
+        <button class="ob-card" disabled={busy} onClick={async () => { setBusy(true); setErr(''); try { await invoke('setup_local'); done() } catch (x) { setErr(String(x)) } finally { setBusy(false) } }}>
+          <strong>{busy ? 'Setting up…' : 'Just this computer'}</strong><span>No server: your AI usage, agent status, system monitor and storage on this computer only. Nothing leaves it. You can connect to a server later.</span>
+        </button>
       </div>
+      {err && <p class="err" role="alert">{err}</p>}
       <div class="group" style={{ marginTop: 16 }}><DockToggle /></div>
     </div>
   )

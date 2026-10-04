@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.0
+
+- **Just this computer:** use DeviceTally with no server and no account. Your AI usage (Claude Code, Codex, OpenCode, Kimi), agent status, menu bar and storage, counted on this computer; nothing leaves it. Connect to a server later and the history uploads.
+- **Updates that reach you:** a new version shows a card with **Update now** / **Later**, or installs itself when DeviceTally isn't in use (**Update automatically**, Settings), then says so.
+- **Admins:** each computer's version on Devices, marked when it's behind; updates per computer (ask or automatic) with a default for all; **Update now** for one computer (within about 5 minutes); and a note when a computer couldn't update (e.g. no permission to install apps).
+- **Menu bar:** separate items sit together (DeviceTally sets macOS's gap between its own items to 0; other apps are unaffected), so **Between items** is the whole gap. The preview matches.
+- **Main window:** the logo, name and version stand out; **Today** in the ranges; the devices table has one tokens column with a Today / 7 days / 30 days picker.
+- **Menu-bar panel:** name and version on top, then Open DeviceTally, Settings and Quit.
+- Device notices are one quiet line each.
+- **`npm run try`** runs the app locally with live reload (marked TEST) before a release.
+
 ## 1.4.2
 
 - Device notices (offline, tracking problems, disk filling up) are quiet rows with a short title, not red boxes, and say "Last seen a day ago" instead of "1 days".

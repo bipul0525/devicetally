@@ -64,6 +64,7 @@ struct AppState {
     tray_items: Mutex<Vec<String>>,
     // Finished agent tasks, newest first (last 100), kept in ~/.devicetally.
     agent_log: Mutex<Vec<activity::Finished>>,
+    update_error: Mutex<Option<String>>,
     // Battery: charging at the last redraw, and when it last changed (for the charger animation).
     battery_change: Mutex<(Option<bool>, Option<std::time::Instant>)>,
     battery_moving: std::sync::atomic::AtomicBool,
@@ -183,6 +184,10 @@ async fn get_summary(state: &AppState, range: &str) -> Result<Value, String> {
     let req = match (admin, agent) {
         (Some(token), _) => state.http.get(format!("{server}/api/summary?range={range}")).header("cookie", format!("dt_session={token}")),
         (None, Some((agent_server, key))) => state.http.get(format!("{agent_server}/api/v1/summary?range={range}")).bearer_auth(key),
+        (None, None) if local_mode(state) => {
+            let days = match range { "30d" => "30", "7d" => "7", _ => "1" };
+            return run_tracker(vec!["usage".into(), "summary".into(), days.into()]).await;
+        }
         (None, None) => return Err("not_set_up".into()),
     };
     let admin_mode = state.token(&server).is_some();
@@ -400,15 +405,21 @@ fn notify_mac(app: &AppHandle, title: &str, body: &str, sound: Option<&str>, res
 /// DeviceTally's own notification: a small card at the top right, over any app (even full screen),
 /// gone after 6 s; a click opens DeviceTally.
 fn show_card(app: &AppHandle, title: &str, body: &str) {
+    show_card_as(app, title, body, "", 6);
+}
+
+/// A card of a kind ("" plain, "update" with Update now / Later), shown for `secs` seconds.
+fn show_card_as(app: &AppHandle, title: &str, body: &str, kind: &str, secs: u64) {
     let pct = |s: &str| s.bytes().map(|c| if c.is_ascii_alphanumeric() { (c as char).to_string() } else { format!("%{c:02X}") }).collect::<String>();
     let (title, body) = (title.to_string(), body.to_string());
-    let payload = serde_json::json!({ "title": &title, "body": &body, "id": now_ms() });
+    let kind = kind.to_string();
+    let payload = serde_json::json!({ "title": &title, "body": &body, "kind": &kind, "id": now_ms() });
     let app2 = app.clone();
     let _ = app.run_on_main_thread(move || {
         let w = match app2.get_webview_window("card") {
             Some(w) => w,
             None => {
-                let Ok(w) = WebviewWindowBuilder::new(&app2, "card", WebviewUrl::App(format!("index.html?view=card&t={}&b={}", pct(&title), pct(&body)).into()))
+                let Ok(w) = WebviewWindowBuilder::new(&app2, "card", WebviewUrl::App(format!("index.html?view=card&t={}&b={}&k={}", pct(&title), pct(&body), pct(&kind)).into()))
                     .title("DeviceTally")
                     .inner_size(356.0, 76.0)
                     .decorations(false)
@@ -439,7 +450,7 @@ fn show_card(app: &AppHandle, title: &str, body: &str) {
         let id = payload["id"].as_i64().unwrap_or(0);
         let w2 = w.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(6)).await;
+            tokio::time::sleep(Duration::from_secs(secs)).await;
             // Hide unless a newer card replaced it.
             let latest = w2.app_handle().state::<AppState>().card_id.load(std::sync::atomic::Ordering::Relaxed);
             if latest == id {
@@ -448,6 +459,53 @@ fn show_card(app: &AppHandle, title: &str, body: &str) {
         });
         app2.state::<AppState>().card_id.store(id, std::sync::atomic::Ordering::Relaxed);
     });
+}
+
+/// A card from the page: "update" (Update now / Later, stays a minute) or a plain one.
+#[tauri::command]
+fn show_notice(app: AppHandle, title: String, body: String, kind: String) {
+    show_card_as(&app, &title, &body, &kind, if kind == "update" { 60 } else { 8 });
+}
+
+/// The update card's buttons: tells the popover (which runs the updater) what was chosen.
+#[tauri::command]
+fn card_update(app: AppHandle, install: bool) {
+    if let Some(w) = app.get_webview_window("card") {
+        let _ = w.hide();
+    }
+    let _ = app.emit("dt:update-choice", install);
+}
+
+/// Whether someone is using DeviceTally right now (its window or panel is open): updates wait.
+#[tauri::command]
+fn in_use(app: AppHandle) -> bool {
+    ["main", "popover"].iter().any(|l| app.get_webview_window(l).is_some_and(|w| w.is_visible().unwrap_or(false)))
+}
+
+/// How this computer should update, as the admin set it: ("ask" | "auto", update-now time in ms).
+/// The device's own setting wins over the global one. Read with this computer's device key.
+#[tauri::command]
+async fn update_policy(state: State<'_, AppState>) -> Result<(String, i64), String> {
+    let Some((server, key)) = state.agent.lock().unwrap().clone() else { return Ok(("ask".into(), 0)) };
+    let v: Value = state.http.get(format!("{server}/api/v1/config")).bearer_auth(&key).send().await.map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
+    Ok(policy_of(&v))
+}
+
+fn policy_of(config: &Value) -> (String, i64) {
+    let me = config["device_id"].as_str().unwrap_or_default();
+    let rows = config["settings"].as_array().cloned().unwrap_or_default();
+    let row = |scope: &str, id: &str| rows.iter().find(|r| r["scope"] == scope && r["scope_id"].as_str().unwrap_or_default() == id).map(|r| r["json"].clone());
+    let (global, device) = (row("global", ""), row("device", me));
+    let mode = [&device, &global].iter().find_map(|r| r.as_ref().and_then(|j| j["app_updates"].as_str().map(String::from))).unwrap_or_else(|| "ask".into());
+    let now = device.as_ref().and_then(|j| j["update_now"].as_i64()).unwrap_or(0);
+    (if mode == "auto" { mode } else { "ask".into() }, now)
+}
+
+/// The last failed update (e.g. a Mac account that can't change Applications), sent with the
+/// check-in so the admin sees it. None clears it.
+#[tauri::command]
+fn report_update_error(state: State<'_, AppState>, error: Option<String>) {
+    *state.update_error.lock().unwrap() = error;
 }
 
 /// The card's click and close.
@@ -493,6 +551,9 @@ async fn heartbeat(app: &AppHandle) {
         h.insert("disk_total".into(), disk.disk_total.into());
         h.insert("app".into(), env!("CARGO_PKG_VERSION").into());
         h.insert("os".into(), std::env::consts::OS.into());
+        if let Some(e) = state.update_error.lock().unwrap().clone() {
+            h.insert("update_error".into(), e.into());
+        }
     }
     let res = state.http.post(format!("{server}/api/v1/health")).bearer_auth(&key).json(&health).send().await;
     // Servers before 0.10 have no /health; their config request still records "last seen".
@@ -923,6 +984,59 @@ struct AppStatus {
     signed_in: bool,
     this_device_connected: bool,
     agent_server: String,
+    /// "Just this computer": no server; usage is counted here by the tracker.
+    local: bool,
+}
+
+/// "Just this computer" mode: the tracker's local marker, and no server connection.
+fn local_mode(state: &AppState) -> bool {
+    state.agent.lock().unwrap().is_none() && agent_dir().join("local").exists()
+}
+
+/// Runs the bundled tracker and parses its JSON output (local usage).
+async fn run_tracker(args: Vec<String>) -> Result<Value, String> {
+    let bin = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name(if cfg!(windows) { "devicetally.exe" } else { "devicetally" });
+    let out = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(bin);
+        cmd.args(&args).stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        cmd.output()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())
+}
+
+/// Sets up "Just this computer": the bundled tracker installs itself and the hooks, no server.
+#[tauri::command]
+async fn setup_local(app: AppHandle) -> Result<(), String> {
+    let bin = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name(if cfg!(windows) { "devicetally.exe" } else { "devicetally" });
+    let out = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(bin);
+        cmd.arg("local").stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        cmd.output()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().lines().last().unwrap_or("Setup failed.").to_string());
+    }
+    refresh_tray(&app).await;
+    Ok(())
 }
 
 /// This machine's enrolled agent: (server, device key) from its state file.
@@ -946,6 +1060,12 @@ async fn activity() -> Result<Vec<activity::Session>, String> {
     let mut s = activity::read(&agent_dir().join("activity"));
     s.sort_by(|a, b| b.since.cmp(&a.since));
     Ok(s)
+}
+
+/// Started by `npm run try` (a local test build, not the installed app): the app shows a TEST badge.
+#[tauri::command]
+fn test_build() -> bool {
+    std::env::var("DEVICETALLY_OPEN_WINDOW").is_ok()
 }
 
 /// Whether the menu bar looks dark right now (for the preview in Settings).
@@ -978,6 +1098,7 @@ fn status(state: State<'_, AppState>) -> AppStatus {
     AppStatus {
         signed_in: !server.is_empty() && state.token(&server).is_some(),
         this_device_connected: agent.is_some(),
+        local: agent.is_none() && agent_dir().join("local").exists(),
         agent_server: agent.map(|a| a.0).unwrap_or_default(),
         server,
     }
@@ -1231,7 +1352,15 @@ async fn api(state: State<'_, AppState>, method: String, path: String, body: Opt
         let r = state.http.request(m, format!("{server}/api{path}")).header("cookie", format!("dt_session={token}"));
         if let Some(b) = body { r.json(&b) } else { r }
     } else {
-        let Some((agent_server, key)) = state.agent.lock().unwrap().clone() else { return Err("not_set_up".into()) };
+        let agent = state.agent.lock().unwrap().clone();
+        let Some((agent_server, key)) = agent else {
+            // Just this computer: the overview is counted here; nothing else exists without a server.
+            if local_mode(&state) && method == "GET" && (path == "/overview" || path.starts_with("/overview?")) {
+                let days = path.split(['?', '&']).find_map(|p| p.strip_prefix("days=")).and_then(|d| d.parse::<u32>().ok()).unwrap_or(30);
+                return run_tracker(vec!["usage".into(), days.clamp(1, 3660).to_string()]).await;
+            }
+            return Err(if local_mode(&state) { "local".into() } else { "not_set_up".into() });
+        };
         let read = method == "GET" && ["/overview", "/sessions", "/summary"].iter().any(|p| path == *p || path.starts_with(&format!("{p}?")) || path.starts_with("/sessions/"));
         let request = path == "/disconnect-request" && ["GET", "POST", "DELETE"].contains(&method.as_str());
         if !read && !request {
@@ -1525,7 +1654,7 @@ fn show_main(app: &AppHandle, tab: &str) -> tauri::Result<()> {
         return w.set_focus();
     }
     let w = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(format!("index.html?view=main&tab={tab}").into()))
-        .title("DeviceTally")
+        .title(if test_build() { "DeviceTally (test)" } else { "DeviceTally" })
         .inner_size(900.0, 640.0)
         // Tauri's file-drop handler swallows the page's own drag and drop (reordering menu-bar items).
         .disable_drag_drop_handler()
@@ -1775,6 +1904,15 @@ fn toggle_popover(app: &AppHandle, panel: &str) {
 }
 
 pub fn run() {
+    // macOS puts a gap (about 16 pt) between menu-bar items, read when an app starts. DeviceTally
+    // sets its own copy to 0, so its items sit together (the Spacing setting adds room); other
+    // apps' items keep the Mac-wide value.
+    #[cfg(target_os = "macos")]
+    {
+        let d = objc2_foundation::NSUserDefaults::standardUserDefaults();
+        d.setInteger_forKey(0, &objc2_foundation::NSString::from_str("NSStatusItemSpacing"));
+        d.setInteger_forKey(2, &objc2_foundation::NSString::from_str("NSStatusItemSelectionPadding"));
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_opener::init())
@@ -1782,7 +1920,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
-        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_dock, get_dock, set_menubar_live, menubar_preview, menubar_dark, system_stats, stats_history, current_panel, top_processes, net_details, reset_net_totals, net_processes, public_ip, open_tab, activity, agent_history, test_alert, open_notification_settings, card_action, preview_sound, list_sounds, storage_scan, open_full_disk_access, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
+        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, setup_local, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_dock, get_dock, set_menubar_live, menubar_preview, menubar_dark, test_build, system_stats, stats_history, current_panel, top_processes, net_details, reset_net_totals, net_processes, public_ip, open_tab, activity, agent_history, test_alert, open_notification_settings, card_action, show_notice, card_update, in_use, update_policy, report_update_error, preview_sound, list_sounds, storage_scan, open_full_disk_access, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
         .setup(|app| {
             let handle = app.handle().clone();
             let cfg = load_config(&handle);
@@ -1805,6 +1943,7 @@ pub fn run() {
                 last_sample: Mutex::new(None),
                 tray_items: Mutex::new(vec![]),
                 agent_log: Mutex::new(std::fs::read(agent_dir().join("app-agent-history.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()),
+                update_error: Mutex::new(None),
                 battery_change: Mutex::new((None, None)),
                 battery_moving: Default::default(),
                 connectivity: Mutex::new(Default::default()),
@@ -1946,6 +2085,18 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn update_policy_device_beats_global() {
+        let cfg = serde_json::json!({ "device_id": "d1", "settings": [
+            { "scope": "global", "scope_id": "", "json": { "app_updates": "auto" } },
+            { "scope": "device", "scope_id": "d2", "json": { "app_updates": "ask", "update_now": 5 } },
+        ] });
+        assert_eq!(super::policy_of(&cfg), ("auto".into(), 0), "global applies; another device's row doesn't");
+        let cfg = serde_json::json!({ "device_id": "d2", "settings": cfg["settings"] });
+        assert_eq!(super::policy_of(&cfg), ("ask".into(), 5), "the device's own choice and update-now");
+        assert_eq!(super::policy_of(&serde_json::json!({})), ("ask".into(), 0), "default: ask");
+    }
 
     #[test]
     fn export_file_dates() {

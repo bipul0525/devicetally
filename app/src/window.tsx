@@ -44,7 +44,7 @@ const SHAPES = [
 ]
 export const Chip = ({ i }: { i: number }) => <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">{SHAPES[Math.max(0, i) % 6]}</svg>
 
-type Status = { server: string; signed_in: boolean; this_device_connected: boolean; agent_server: string }
+type Status = { server: string; signed_in: boolean; this_device_connected: boolean; agent_server: string; local?: boolean }
 
 function useLoad<T>(path: string | null, deps: unknown[] = []) {
   const [s, set] = useState<{ data?: T; error?: string }>({})
@@ -88,7 +88,7 @@ function Bars({ items, max }: { items: { key: string; label: ComponentChildren; 
   )
 }
 
-const RANGES = [['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '12 months']] as const
+const RANGES = [['1', 'Today'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '12 months']] as const
 
 function Seg<T extends string>({ value, options, onChange, label }: { value: T; options: readonly (readonly [T, string])[]; onChange: (v: T) => void; label: string }) {
   return (
@@ -150,6 +150,8 @@ type DeviceUsage = { id: string; name: string; os: string | null; chip: number; 
 
 // Admin: every computer side by side, so it's clear which one uses how much. Click to filter.
 function DevicesAtGlance({ selected, select }: { selected: string; select: (id: string) => void }) {
+  // One tokens column with a range picker, instead of Today / 7 days / 30 days side by side.
+  const [span, setSpan] = useState<'today' | 'week' | 'month'>(() => { try { return (localStorage.getItem('dt-glance') as 'today' | 'week' | 'month') || 'week' } catch { return 'week' } })
   const q = useLoad<DeviceUsage[]>('/device-usage')
   const devs = useLoad<Device[]>('/devices')
   // Tracking problems reported by a computer's app (details under Devices).
@@ -175,30 +177,32 @@ function DevicesAtGlance({ selected, select }: { selected: string; select: (id: 
                 return (
                   <div key={d.id} class="note">
                     <span class="note-ic off" aria-hidden="true" />
-                    <div><b>{d.name} is offline</b><span>Last seen {days === 1 ? 'a day' : `${days} days`} ago. It may be switched off, or DeviceTally was removed from it.</span></div>
+                    <span title="It may be switched off, or DeviceTally was removed from it."><b>{d.name}</b> is offline · last seen {days === 1 ? 'a day' : `${days} days`} ago</span>
                   </div>
                 )
               })}
               {problems.map((p) => (
                 <div key={p} class="note">
-                  <span class="note-ic warn" aria-hidden="true">!</span>
-                  <div><b>{p.split(': ')[0]}</b><span>{p.split(': ').slice(1).join(': ').replace(/^./, (c) => c.toUpperCase())}. See Devices.</span></div>
+                  <span class="note-ic warn" aria-hidden="true" />
+                  <span><b>{p.split(': ')[0]}</b> · {p.split(': ').slice(1).join(': ')}</span>
                 </div>
               ))}
             </div>
           )}
-          <table class="list">
-            <thead><tr><th>Device</th><th>Status</th><th class="r">Today</th><th class="r">7 days</th><th class="r">30 days</th><th class="r">Active (7 days)</th><th>Last active</th><th>Last prompt</th></tr></thead>
+          <table class="list glance">
+            <colgroup><col style={{ width: '30%' }} /><col style={{ width: '32%' }} /><col style={{ width: '18%' }} /><col style={{ width: '20%' }} /></colgroup>
+            <thead><tr><th>Device</th><th>Status</th>
+              <th class="r"><select class="th-pick" aria-label="Tokens for" value={span} onChange={(e) => { const v = e.currentTarget.value as typeof span; setSpan(v); try { localStorage.setItem('dt-glance', v) } catch { /* fine */ } }}>
+                <option value="today">Tokens today</option><option value="week">Tokens · 7 days</option><option value="month">Tokens · 30 days</option></select></th>
+              <th>Last prompt</th></tr></thead>
             <tbody>
               {rows.map((d) => (
                 <tr key={d.id} tabIndex={0} aria-selected={selected === d.id} class={selected === d.id ? 'selected' : ''}
                   onClick={() => select(selected === d.id ? '' : d.id)} onKeyDown={(e) => e.key === 'Enter' && select(selected === d.id ? '' : d.id)}>
                   <td><span class="name"><Chip i={d.chip} /> {d.name}</span></td>
                   <td><Health ts={d.last_seen ?? d.last_active} /></td>
-                  <td class="r num">{fmt(d.today)}</td><td class="r num">{fmt(d.week)}</td><td class="r num">{fmt(d.month)}</td>
-                  <td class="r num">{dur(d.active_week)}</td>
-                  <td>{ago(d.last_active ?? d.last_seen)}</td>
-                  <td>{ago(d.last_prompt)}</td>
+                  <td class="r num" title={`Active ${dur(d.active_week)} in the last 7 days · last active ${ago(d.last_active ?? d.last_seen)}`}>{fmt(span === 'today' ? d.today : span === 'week' ? d.week : d.month)}</td>
+                  <td class="muted">{ago(d.last_prompt)}</td>
                 </tr>
               ))}
             </tbody>
@@ -233,7 +237,7 @@ function OverviewTab({ admin }: { admin: boolean }) {
       {admin && <DevicesAtGlance selected={device} select={setDevice} />}
       <div class="toolbar">
         <Seg label="Range" value={range} options={RANGES} onChange={setRange} />
-        {q.data && q.data.labels.tools_seen.length > 0 && (
+        {q.data && !(q.data as { local?: boolean }).local && q.data.labels.tools_seen.length > 0 && (
           <select aria-label="Tool" value={tool} onChange={(e) => setTool(e.currentTarget.value)}>
             <option value="">All tools</option>
             {['claude', ...q.data.labels.tools_seen].map((t) => <option key={t} value={t}>{q.data!.labels.tools[t] ?? t}</option>)}
@@ -255,8 +259,8 @@ function OverviewTab({ admin }: { admin: boolean }) {
               <div class="focal">
                 <div class="big num">{fmt(t.tokens)} <span style={{ fontSize: 13, fontWeight: 400 }}>tokens</span></div>
                 <div class="sub num">
-                  {<span title="What this usage would cost at API prices. Subscriptions are a flat fee.">{usd(t.cost)} API-equivalent</span>}
-                  {change !== null && <span class="trend">{change >= 0 ? '+' : ''}{change}% vs previous {RANGES.find((r) => r[0] === range)![1]}</span>}
+                  {t.cost > 0 && <span title="What this usage would cost at API prices. Subscriptions are a flat fee.">{usd(t.cost)} API-equivalent</span>}
+                  {change !== null && <span class="trend">{change >= 0 ? '+' : ''}{change}% vs {range === '1' ? 'yesterday' : `previous ${RANGES.find((r) => r[0] === range)![1]}`}</span>}
                 </div>
               </div>
               <div class="stats num">
@@ -378,12 +382,18 @@ function SessionDetail({ id, admin, back, project, devices }: { id: string; admi
 // ---------- Devices (admin) ----------
 type Device = { id: string; name: string; os: string | null; arch: string | null; agent_version: string | null; last_seen: number | null; revoked_at: number | null; disconnect_requested_at?: number | null
   health?: DeviceHealth | null; health_at?: number | null; disk_full_in_days?: number | null }
-type DeviceHealth = { hooks?: 'locked' | 'user' | 'missing'; locked?: boolean; paused?: boolean; removed?: { path: string; at: number }[]; config_dirs?: string[]; disk_free?: number; disk_total?: number; app?: string; agent?: string }
+type DeviceHealth = { hooks?: 'locked' | 'user' | 'missing'; locked?: boolean; paused?: boolean; removed?: { path: string; at: number }[]; config_dirs?: string[]; disk_free?: number; disk_total?: number; app?: string; agent?: string; update_error?: string }
 
 /** Under each computer in Devices: tracking health, disk, and the projects it's meant for. */
 function DeviceDetails({ d, settings, saved }: { d: Device; settings: SettingRow[]; saved: () => void }) {
   const h = d.health
-  const own = JSON.parse(settings.find((r) => r.scope === 'device' && r.scope_id === d.id)?.json ?? '{}') as { allowed_projects?: string[] }
+  const own = JSON.parse(settings.find((r) => r.scope === 'device' && r.scope_id === d.id)?.json ?? '{}') as { allowed_projects?: string[]; app_updates?: string; update_now?: number }
+  const globalUpdates = (JSON.parse(settings.find((r) => r.scope === 'global')?.json ?? '{}') as { app_updates?: string }).app_updates === 'auto' ? 'auto' : 'ask'
+  const [mine, setMine] = useState('')
+  useEffect(() => { import('@tauri-apps/api/app').then((m) => m.getVersion()).then(setMine, () => {}) }, [])
+  const behind = !!(h?.app && mine && newer(mine, h.app))
+  const setDevice = async (patch: Record<string, unknown>) => { await api(`/settings/device/${d.id}`, 'PUT', { ...own, ...patch }); saved() }
+  const asked = own.update_now && (!d.health_at || d.health_at < own.update_now + 10 * 60_000) && behind
   const allowed = own.allowed_projects ?? []
   const month = useLoad<Overview>(`/overview?days=30&device=${d.id}`)
   const week = useLoad<Overview>(`/overview?days=7&device=${d.id}`)
@@ -409,8 +419,15 @@ function DeviceDetails({ d, settings, saved }: { d: Device; settings: SettingRow
       <div class="badges">{badges.map(([k, t, title]) => <span key={t} class={`badge ${k}`} title={title}>{t}</span>)}</div>
       <div class="hint" style={{ margin: 0 }}>
         {h?.disk_total ? <>Disk {gbText(h.disk_free ?? 0)} free of {gbText(h.disk_total)}{d.disk_full_in_days != null && <b class={d.disk_full_in_days < 30 ? 'warn' : ''}> · full in about {d.disk_full_in_days < 14 ? `${d.disk_full_in_days} days` : `${Math.round(d.disk_full_in_days / 7)} weeks`}</b>}</> : null}
-        {h?.app && <> · App {h.app}</>}{d.health_at ? <> · reported {ago(d.health_at)}</> : null}
+        {d.health_at ? <> · reported {ago(d.health_at)}</> : null}
         {' · '}Projects: {allowed.length ? allowed.map(name).join(', ') : 'any'} <button class="link-btn" onClick={() => setEditing(allowed)}>Change</button>
+      </div>
+      <div class="dev-updates">
+        <span class={`badge ${behind ? 'warn' : 'ok'}`} title={`App ${h?.app ?? 'unknown'} · tracker ${h?.agent ?? d.agent_version ?? 'unknown'}`}>{h?.app ? `Version ${h.app}${behind ? ` · ${mine} available` : ' · up to date'}` : 'Version unknown'}</span>
+        <label class="hint" style={{ margin: 0 }}>Updates <select value={own.app_updates ?? ''} onChange={(e) => { const v = e.currentTarget.value; setDevice({ app_updates: v || undefined }) }}>
+          <option value="">Default ({globalUpdates === 'auto' ? 'automatic' : 'ask'})</option><option value="ask">Ask the user</option><option value="auto">Automatic</option></select></label>
+        {behind && <button class="btn" disabled={!!asked} title="It updates at its next check-in (within about 5 minutes), when DeviceTally isn't in use there" onClick={() => setDevice({ update_now: Date.now() })}>{asked ? 'Update requested' : 'Update now'}</button>}
+        {h?.update_error && <span class="badge bad" title={h.update_error}>Couldn't update: {/permission|denied|not permitted|read-only/i.test(h.update_error) ? 'needs admin rights on that computer' : 'hover for details'}</span>}
       </div>
       {editing && (
         <div class="allowed-editor">
@@ -841,6 +858,8 @@ function AdminSettings({ openPrompts }: { openPrompts: () => void }) {
             <div class="field" key={k}><label for={`g-${k}`}>{l}{h && <div class="hint" style={{ margin: 0 }}>{h}</div>}</label>
               <input id={`g-${k}`} type="checkbox" checked={global[k] ?? true} onChange={(e) => save({ [k]: e.currentTarget.checked })} /></div>
           ))}
+          <div class="field"><label for="g-upd">Updates on joined computers<div class="hint" style={{ margin: 0 }}>Ask: a "new version" card with Update now / Later. Automatic: installs when DeviceTally isn't in use, then says so. Each device can override it (Devices).</div></label>
+            <select id="g-upd" value={global.app_updates === 'auto' ? 'auto' : 'ask'} onChange={(e) => save({ app_updates: e.currentTarget.value })}><option value="ask">Ask the user</option><option value="auto">Automatic</option></select></div>
           <div class="field"><label for="keep">Keep prompt text for</label>
             <select id="keep" value={String(global.keep_prompts_days === null ? 'forever' : global.keep_prompts_days ?? 90)} onChange={(e) => save({ keep_prompts_days: e.currentTarget.value === 'forever' ? null : Number(e.currentTarget.value) })}>
               {[30, 90, 180, 365].map((d) => <option key={d} value={d}>{d} days</option>)}<option value="forever">Forever</option>
@@ -1345,7 +1364,7 @@ function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCf
           <input id="mbl" type="checkbox" checked={cfg.labels} onChange={(e) => save({ ...cfg, labels: e.currentTarget.checked })} /></div>
       </Card>
       <Card title="Spacing">
-        <Slider id="mbg" label="Between items" hint={cfg.combined ? undefined : "The gap between neighbouring menu-bar items."} min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`} live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
+        <Slider id="mbg" label="Between items" hint={cfg.combined ? undefined : "The gap between DeviceTally\u2019s menu-bar items. 0 puts them right next to each other."} min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`} live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
       </Card>
     </div>
   )
@@ -1503,7 +1522,7 @@ function SettingsTab({ st, refresh, signIn }: { st: Status; refresh: () => void;
   if (!st.signed_in) {
     return (
       <div class="page">
-        {adminSignIn ? <div class="embedded-signin"><SignIn back={() => setAdminSignIn(false)} done={refresh} /></div> : (
+        {st.local && !adminSignIn ? null : adminSignIn ? <div class="embedded-signin"><SignIn back={() => setAdminSignIn(false)} done={refresh} /></div> : (
           <section class="section"><h2>Admin</h2>
             <div class="group"><div class="field">
               <span>Not signed in. This window shows this computer only.</span>
@@ -1512,6 +1531,7 @@ function SettingsTab({ st, refresh, signIn }: { st: Status; refresh: () => void;
           </section>
         )}
         {st.this_device_connected && <DeviceSettings st={st} refresh={refresh} />}
+        {st.local && <LocalGroup refresh={refresh} />}
         <AppGroup />
       </div>
     )
@@ -1524,6 +1544,20 @@ function SettingsTab({ st, refresh, signIn }: { st: Status; refresh: () => void;
       <AppGroup />
       <AdminSettings openPrompts={() => setPrompts(true)} />
     </div>
+  )
+}
+
+/** "Just this computer": what that means, and the way to a server later (history moves along). */
+function LocalGroup({ refresh }: { refresh: () => void }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <section class="section"><h2>Just this computer</h2>
+      <div class="group">
+        <div class="field"><span>DeviceTally runs without a server: usage is counted on this computer and nothing leaves it.<div class="hint" style={{ margin: 0 }}>Cost estimates and other computers need a server. Connecting later uploads the history kept here.</div></span>
+          {!open && <button class="btn" onClick={() => setOpen(true)}>Connect to a server</button>}</div>
+      </div>
+      {open && <div class="embedded-signin"><Onboarding done={() => { setOpen(false); refresh() }} /></div>}
+    </section>
   )
 }
 
@@ -1680,10 +1714,23 @@ function ServerBanner() {
   )
 }
 
-export function AppTitle() {
+export function AppTitle({ big }: { big?: boolean }) {
   const [v, setV] = useState('')
-  useEffect(() => { import('@tauri-apps/api/app').then((m) => m.getVersion()).then(setV, () => {}) }, [])
-  return <span class="app-title"><img src="/icon.png" alt="" width={18} height={18} /> DeviceTally{v && <span class="hint" style={{ margin: 0 }}>{v}</span>}</span>
+  const [test, setTest] = useState(false)
+  useEffect(() => {
+    import('@tauri-apps/api/app').then((m) => m.getVersion()).then(setV, () => {})
+    invoke<boolean>('test_build').then(setTest, () => {})
+  }, [])
+  if (big) return (
+    <span class="brand-big">
+      <img src="/icon.png" alt="" width={40} height={40} />
+      <span><b>DeviceTally</b><small>{v && `Version ${v}`}{test && <span class="test-badge" title="Started with npm run try: a local test build, not the installed app">TEST</span>}</small></span>
+    </span>
+  )
+  return (
+    <span class="app-title"><img src="/icon.png" alt="" width={18} height={18} /> DeviceTally{v && <span class="hint" style={{ margin: 0 }}>{v}</span>}
+      {test && <span class="test-badge" title="Started with npm run try: a local test build, not the installed app">TEST</span>}</span>
+  )
 }
 
 export function MainWindow() {
@@ -1699,18 +1746,19 @@ export function MainWindow() {
   }, [])
   if (!st) return <div class="main" />
   const admin = st.signed_in
-  const connected = admin || st.this_device_connected
+  const connected = admin || st.this_device_connected || !!st.local
   if (!connected) return <div class="main"><Onboarding done={refresh} /></div>
   const tabs: [string, string][] = admin
     ? [['overview', 'Overview'], ['sessions', 'Sessions'], ['devices', 'Devices'], ['menubar', 'Menu bar'], ['storage', 'Storage'], ['settings', 'Settings']]
+    : st.local ? [['overview', 'My usage'], ['menubar', 'Menu bar'], ['storage', 'Storage'], ['settings', 'Settings']]
     : [['overview', 'My usage'], ['sessions', 'Sessions'], ['menubar', 'Menu bar'], ['storage', 'Storage'], ['settings', 'Settings']]
   const current = tabs.some(([k]) => k === tab) ? tab : tabs[0][0]
   return (
     <div class="main">
       <nav class="tabs" role="tablist">
-        <AppTitle />
+        <AppTitle big />
         {tabs.map(([k, l]) => <button key={k} role="tab" aria-selected={current === k} onClick={() => setTab(k)}>{l}</button>)}
-        {!admin && <button class="btn tab-signin" onClick={() => { setSignIn(true); setTab('settings') }}>Sign in as admin</button>}
+        {!admin && !st.local && <button class="btn tab-signin" onClick={() => { setSignIn(true); setTab('settings') }}>Sign in as admin</button>}
       </nav>
       {admin && <ServerBanner />}
       <main key={`${current}-${admin}`}>

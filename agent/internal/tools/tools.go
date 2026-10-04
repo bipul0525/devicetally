@@ -98,6 +98,9 @@ func Ensure(server string) (string, error) {
 		return "", fmt.Errorf("other AI tools are not supported on %s", platformKey())
 	}
 	url := fmt.Sprintf("%s/dl/tokscale/%s/%s.tgz", strings.TrimRight(server, "/"), Version, pkg[0])
+	if server == "" { // no server (just this computer): straight from npm; the integrity check below still applies
+		url = fmt.Sprintf("https://registry.npmjs.org/@tokscale/%s/-/%s-%s.tgz", pkg[0], pkg[0], Version)
+	}
 	res, err := (&http.Client{Timeout: 5 * time.Minute}).Get(url)
 	if err != nil {
 		return "", err

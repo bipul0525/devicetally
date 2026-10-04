@@ -5,7 +5,7 @@ import { useEffect, useState } from 'preact/hooks'
 import './styles.css'
 import { AppTitle, MainWindow } from './window'
 import { Mark, modelName } from './brands'
-import { UpdateNote } from './updates'
+import { UpdateAgent, UpdateNote } from './updates'
 import { listen } from '@tauri-apps/api/event'
 import { ModulePanel, PANEL_TITLE } from './panels'
 
@@ -143,12 +143,18 @@ function Popover() {
   // Fixed at the top: who we are, the way into the app, and the range. Only the body scrolls.
   const brand = (
     <div class="pop-brand">
-      <AppTitle />
-      <button class="btn primary" onClick={() => invoke('open_dashboard')}>Open DeviceTally</button>
-      <button class="icon-btn" aria-label="Settings" title="Settings" onClick={() => invoke('open_settings')}>⚙︎</button>
-      <button class="icon-btn" aria-label="Quit DeviceTally" title="Quit DeviceTally (tracking keeps working)" onClick={() => invoke('quit')}>
-        <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v6" /><path d="M4.6 4.2a5 5 0 1 0 6.8 0" /></svg>
-      </button>
+      <div class="pop-id"><AppTitle /></div>
+      <div class="pop-actions">
+        <button class="pop-act primary" onClick={() => invoke('open_dashboard')}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M3 9h18" /></svg>Open DeviceTally
+        </button>
+        <button class="pop-act" onClick={() => invoke('open_settings')}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>Settings
+        </button>
+        <button class="pop-act" title="Quit DeviceTally (tracking keeps working)" onClick={() => invoke('quit')}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10" /><path d="M18.4 6.6a9 9 0 1 1-12.77.04" /></svg>Quit
+        </button>
+      </div>
     </div>
   )
   const header = <header class="pop-head">{brand}</header>
@@ -210,7 +216,7 @@ function Popover() {
           <div class="focal">
             <div class="big num">{fmt(data.tokens)} <span style={{ fontSize: 13, fontWeight: 400 }}>tokens</span></div>
             <div class="sub num">
-              <span title="What this usage would cost at API prices. Subscriptions are a flat fee.">{usd(data.cost)} API-equivalent</span>
+              {data.cost > 0 && <span title="What this usage would cost at API prices. Subscriptions are a flat fee.">{usd(data.cost)} API-equivalent</span>}
               {change !== null && <span class="trend">{change >= 0 ? '+' : ''}{change}% vs {prevLabel}</span>}
             </div>
           </div>
@@ -256,9 +262,19 @@ function Popover() {
 /** DeviceTally's own notification (macOS refuses system ones for apps without a paid signature). */
 function NoticeCard() {
   const q = new URLSearchParams(location.search)
-  const [n, setN] = useState<{ title: string; body: string } | null>(q.get('t') ? { title: q.get('t')!, body: q.get('b') ?? '' } : null)
-  useEffect(() => { const u = listen<{ title: string; body: string }>('dt:card', (e) => setN(e.payload)); return () => { u.then((f) => f()) } }, [])
+  const [n, setN] = useState<{ title: string; body: string; kind?: string } | null>(q.get('t') ? { title: q.get('t')!, body: q.get('b') ?? '', kind: q.get('k') ?? '' } : null)
+  useEffect(() => { const u = listen<{ title: string; body: string; kind?: string }>('dt:card', (e) => setN(e.payload)); return () => { u.then((f) => f()) } }, [])
   if (!n) return null
+  if (n.kind === 'update') return (
+    <div class="dt-card" role="alert">
+      <img src="/icon.png" alt="" />
+      <div><b>{n.title}</b><span>{n.body}</span></div>
+      <span class="dt-card-btns">
+        <button class="dt-card-btn primary" onClick={() => invoke('card_update', { install: true })}>Update now</button>
+        <button class="dt-card-btn" onClick={() => invoke('card_update', { install: false })}>Later</button>
+      </span>
+    </div>
+  )
   return (
     <div class="dt-card" role="alert" onClick={() => invoke('card_action', { open: true })}>
       <img src="/icon.png" alt="" />
@@ -269,4 +285,5 @@ function NoticeCard() {
 }
 
 const view = new URLSearchParams(location.search).get('view')
-render(view === 'main' ? <MainWindow /> : view === 'card' ? <NoticeCard /> : <Popover />, document.getElementById('app')!)
+// The update logic lives beside the menu-bar panel (always loaded, whichever panel shows).
+render(view === 'main' ? <MainWindow /> : view === 'card' ? <NoticeCard /> : <><Popover /><UpdateAgent /></>, document.getElementById('app')!)

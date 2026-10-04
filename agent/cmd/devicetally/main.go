@@ -19,6 +19,7 @@ import (
 
 	"devicetally/agent/internal/filter"
 	"devicetally/agent/internal/hooks"
+	"devicetally/agent/internal/local"
 	"devicetally/agent/internal/schedule"
 	"devicetally/agent/internal/spawn"
 	"devicetally/agent/internal/state"
@@ -35,6 +36,8 @@ const usage = `devicetally: Claude Code usage tracking for your own DeviceTally 
   devicetally status                      Show connection, last sync and paused state
   devicetally sync                        Upload new usage now
   devicetally pause | resume              Stop / restart tracking on this device
+  devicetally local                       Use DeviceTally on this computer only (no server)
+  devicetally usage [days]                This computer's usage as JSON (local mode)
   devicetally update [--rollback]         Install the latest release (checksum-verified), or undo the last update
   devicetally uninstall                   Remove the hooks and this device's local data
   devicetally version
@@ -57,6 +60,12 @@ func main() {
 		err = syncCmd()
 	case "enroll":
 		err = enroll(os.Args[2:])
+	case "local":
+		err = localSetup()
+	case "local-tools":
+		err = localTools()
+	case "usage":
+		err = usageCmd(os.Args[2:])
 	case "status":
 		err = status()
 	case "pause", "resume":
@@ -92,8 +101,8 @@ func hook() {
 	var h activity.Hook
 	json.Unmarshal(b, &h)
 	activity.Record(activity.Dir(state.Dir()), h, time.Now().UnixMilli())
-	if in.Event == "Notification" {
-		return
+	if in.Event == "Notification" || local.On() {
+		return // local mode: nothing to upload; usage is read from the transcripts directly
 	}
 	if in.Event == "UserPromptSubmit" {
 		e := syncer.Event{PromptID: in.PromptID, SessionID: in.SessionID, Account: syncer.CurrentAccount(claudeDirOf(in.TranscriptPath)), TS: time.Now().UnixMilli()}
@@ -162,7 +171,7 @@ func syncCmd() error {
 	// Locked (hooks in Claude Code's system-wide settings): the user-level copies would run twice.
 	locked := hooks.ManagedHasOurs(hooks.ManagedPath())
 	if exe := installedPath(); fileExists(exe) {
-		if st, err := state.Load(); err == nil && st.DeviceKey != "" {
+		if st, err := state.Load(); err == nil && (st.DeviceKey != "" || local.On()) {
 			for _, d := range state.ClaudeDirs() {
 				if locked {
 					hooks.Uninstall(filepath.Join(d, "settings.json"))
@@ -174,6 +183,9 @@ func syncCmd() error {
 		}
 	}
 	activity.Prune(activity.Dir(state.Dir()), time.Now().UnixMilli())
+	if local.On() {
+		return nil // just this computer: nothing to upload
+	}
 	for {
 		st, err := state.Load()
 		if err != nil {
@@ -360,6 +372,7 @@ func enroll(args []string) error {
 		return err
 	}
 	st.Server, st.DeviceID, st.DeviceKey, st.Paused = server, out.DeviceID, out.DeviceKey, false
+	os.Remove(local.Marker()) // was "just this computer": from now on usage uploads, history included
 	if err := st.Save(); err != nil {
 		return err
 	}

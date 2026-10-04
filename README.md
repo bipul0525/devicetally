@@ -214,6 +214,7 @@ Don't create Cloudflare tokens, passwords or accounts for me, and don't change a
 
 Open DeviceTally and choose:
 
+- **Just this computer**: no server and no account. Your AI usage (Claude Code, Codex, OpenCode, Kimi), agent status, system monitor and storage, counted on this computer; nothing leaves it. You can connect to a server later (Settings), and the history kept so far uploads.
 - **Set up DeviceTally**, on your first computer. The app walks you through it:
   1. Create a free [Cloudflare account](https://dash.cloudflare.com/sign-up) if you don't have one.
   2. Click **Open Cloudflare's token page**. The right permissions are already filled in: click **Continue to summary**, **Create Token**, **Copy**, and paste the token into the app. It's used once and never stored. (If the page doesn't open, use **Copy link** and paste it into the browser where you're signed in to Cloudflare.)
@@ -221,6 +222,8 @@ Open DeviceTally and choose:
   4. Choose your admin email and password. This computer is connected, and its history uploads.
 - **Join with a code**, on each other computer. On your first computer, go to **Devices → Add device** and copy the message it shows (server address plus a 6-letter code, valid 15 minutes). Enter both on the new computer. The same screen also shows a one-line terminal command, for computers without the app.
 - **Sign in as admin**, to manage DeviceTally from another computer too.
+
+**Updates:** a new version shows a card with **Update now** / **Later**, or installs itself when DeviceTally isn't in use if **Update automatically** is on (Settings). Admins can make updates automatic for joined computers, and update one from **Devices → Update now**.
 
 Then open the **Menu bar** tab to design your menu-bar item. Using DeviceTally's battery or clock? Hide macOS's own in **System Settings → Control Center**.
 
