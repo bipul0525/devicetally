@@ -168,10 +168,25 @@ function DevicesAtGlance({ selected, select }: { selected: string; select: (id: 
     <section class="section"><h2>Devices</h2>
       <Load q={q}>
         {(rows) => (<>
-          {problems.map((p) => <div key={p} class="banner warn-banner" role="status"><span>{p}. See Devices.</span></div>)}
-          {rows.filter((d) => health(d.last_seen ?? d.last_active).state === 'offline').map((d) => (
-            <div key={d.id} class="banner warn-banner" role="status"><span><b>{d.name}</b> hasn't checked in for {Math.round((Date.now() - (d.last_seen ?? d.last_active ?? 0)) / 86400000)} days. It may be off, offline, or DeviceTally was removed from it.</span></div>
-          ))}
+          {(problems.length > 0 || rows.some((d) => health(d.last_seen ?? d.last_active).state === 'offline')) && (
+            <div class="notes" role="status">
+              {rows.filter((d) => health(d.last_seen ?? d.last_active).state === 'offline').map((d) => {
+                const days = Math.max(1, Math.round((Date.now() - (d.last_seen ?? d.last_active ?? 0)) / 86400000))
+                return (
+                  <div key={d.id} class="note">
+                    <span class="note-ic off" aria-hidden="true" />
+                    <div><b>{d.name} is offline</b><span>Last seen {days === 1 ? 'a day' : `${days} days`} ago. It may be switched off, or DeviceTally was removed from it.</span></div>
+                  </div>
+                )
+              })}
+              {problems.map((p) => (
+                <div key={p} class="note">
+                  <span class="note-ic warn" aria-hidden="true">!</span>
+                  <div><b>{p.split(': ')[0]}</b><span>{p.split(': ').slice(1).join(': ').replace(/^./, (c) => c.toUpperCase())}. See Devices.</span></div>
+                </div>
+              ))}
+            </div>
+          )}
           <table class="list">
             <thead><tr><th>Device</th><th>Status</th><th class="r">Today</th><th class="r">7 days</th><th class="r">30 days</th><th class="r">Active (7 days)</th><th>Last active</th><th>Last prompt</th></tr></thead>
             <tbody>

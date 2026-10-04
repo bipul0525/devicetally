@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.2
+
+- Device notices (offline, tracking problems, disk filling up) are quiet rows with a short title, not red boxes, and say "Last seen a day ago" instead of "1 days".
+
 ## 1.4.1
 
 - 1.4.0 for Windows and Linux (1.4.0 didn't build there).
