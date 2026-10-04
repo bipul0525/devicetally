@@ -16,6 +16,8 @@ pub struct Session {
     pub started: i64, // ms, when the current task began (0 = unknown)
     #[serde(default)]
     pub id: String, // the file name: one per session
+    #[serde(default)]
+    pub prompt: String, // the start of the prompt being worked on
 }
 
 impl Session {
@@ -55,7 +57,13 @@ pub fn alerts(seen: &mut Seen, first: bool, sessions: &[Session], now: i64, min_
                     continue;
                 }
                 let took = took.map(|t| if t >= 60_000 { format!("took {} min", (t + 30_000) / 60_000) } else { format!("took {} s", t / 1000) });
-                out.push(Alert { waiting: false, title: format!("{} finished", s.tool_name()), body: format!("{place}{}", took.unwrap_or_else(|| "task done".into())) });
+                // Says which prompt is done; the project goes in the title then.
+                out.push(if s.prompt.is_empty() {
+                    Alert { waiting: false, title: format!("{} finished", s.tool_name()), body: format!("{place}{}", took.unwrap_or_else(|| "task done".into())) }
+                } else {
+                    let title = if s.project.is_empty() { format!("{} finished", s.tool_name()) } else { format!("{} finished · {}", s.tool_name(), s.project) };
+                    Alert { waiting: false, title, body: format!("Done: “{}”{}", s.prompt, took.map(|t| format!(" · {t}")).unwrap_or_default()) }
+                });
             }
             "waiting" => out.push(Alert { waiting: true, title: format!("{} needs you", s.tool_name()), body: format!("{place}a permission or a question") }),
             _ => {}
@@ -124,7 +132,7 @@ mod tests {
     use super::*;
 
     fn s(state: &str, since: i64) -> Session {
-        Session { state: state.into(), since, project: "p".into(), tool: String::new(), started: 0, id: "s".into() }
+        Session { state: state.into(), since, project: "p".into(), tool: String::new(), started: 0, id: "s".into(), prompt: String::new() }
     }
 
     #[test]
@@ -141,7 +149,7 @@ mod tests {
     #[test]
     fn alerts_once_per_change_and_skip_quick_tasks() {
         let now = 100_000_000;
-        let sess = |id: &str, state: &str, started: i64| Session { state: state.into(), since: now, project: "devicetally".into(), tool: String::new(), started, id: id.into() };
+        let sess = |id: &str, state: &str, started: i64| Session { state: state.into(), since: now, project: "devicetally".into(), tool: String::new(), started, id: id.into(), prompt: String::new() };
         let mut seen = Seen::new();
         // Starting the app: old states are recorded, not announced.
         assert!(alerts(&mut seen, true, &[sess("a", "done", now - 300_000)], now, 20_000).is_empty());
@@ -150,6 +158,9 @@ mod tests {
         let a = alerts(&mut seen, false, &long, now, 20_000);
         assert_eq!(a, vec![Alert { waiting: false, title: "Claude Code finished".into(), body: "devicetally · took 3 min".into() }]);
         assert!(alerts(&mut seen, false, &long, now, 20_000).is_empty(), "not again on the next redraw");
+        // With the prompt known, the notification says which one is done.
+        let named = [Session { prompt: "fix the menu bar freeze".into(), ..sess("p", "done", now - 150_000) }];
+        assert_eq!(alerts(&mut seen, false, &named, now, 20_000), vec![Alert { waiting: false, title: "Claude Code finished · devicetally".into(), body: "Done: “fix the menu bar freeze” · took 3 min".into() }]);
         // A quick one isn't.
         assert!(alerts(&mut seen, false, &[sess("c", "done", now - 5_000)], now, 20_000).is_empty());
         // Needing you is always announced.
@@ -164,7 +175,7 @@ mod tests {
         std::fs::write(dir.join("a.json"), r#"{"state":"done","since":5,"project":"devicetally"}"#).unwrap();
         std::fs::write(dir.join("b.json.tmp"), "partial").unwrap();
         std::fs::write(dir.join("c.json"), "not json").unwrap();
-        assert_eq!(read(&dir), vec![Session { state: "done".into(), since: 5, project: "devicetally".into(), tool: String::new(), started: 0, id: "a".into() }]);
+        assert_eq!(read(&dir), vec![Session { state: "done".into(), since: 5, project: "devicetally".into(), tool: String::new(), started: 0, id: "a".into(), prompt: String::new() }]);
         std::fs::remove_dir_all(dir).ok();
     }
 }

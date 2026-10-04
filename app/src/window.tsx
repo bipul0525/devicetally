@@ -1007,7 +1007,7 @@ type ClockCfg = { hour12: boolean; ampm: boolean; weekday: boolean; day: boolean
 type MenuBarCfg = { items: string[]; layout: 'row' | 'stacked' | 'top'; size: string; spacing: string; labels: boolean; net_stack: boolean; scale: number; gap: number
   gap_pt: number | null; weight: 'regular' | 'medium' | 'bold'; font: string; label_color: string; value_color: string
   styles: Record<string, ItemStyle>; clock: ClockCfg; max_width: number; status_dot: boolean; combined: boolean; ring_color: boolean
-  alerts: { done_banner: boolean; done_sound: string; done_sound_on: boolean; wait_banner: boolean; wait_sound: string; wait_sound_on: boolean; min_seconds: number; disk: boolean } }
+  alerts: { done_banner: boolean; done_sound: string; done_sound_on: boolean; wait_banner: boolean; wait_sound: string; wait_sound_on: boolean; min_seconds: number; disk_alert: boolean } }
 /** One alert event: notification on/off, sound on/off, which sound (▶ to hear it), and a test. */
 function AlertRow({ title, hint, banner, soundOn, sound, onBanner, onSoundOn, onSound, test }: {
   title: string; hint: string; banner: boolean; soundOn: boolean; sound: string
@@ -1314,9 +1314,9 @@ function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCf
         <div class="field"><label for="mbl">Labels when an item says "Default"<div class="hint" style={{ margin: 0 }}>T, CPU, MEM, arrows; spelled out with Label on top.</div></label>
           <input id="mbl" type="checkbox" checked={cfg.labels} onChange={(e) => save({ ...cfg, labels: e.currentTarget.checked })} /></div>
       </Card>
-      {cfg.combined && <Card title="Spacing">
-        <Slider id="mbg" label="Between items" min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`} live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
-      </Card>}
+      <Card title="Spacing">
+        <Slider id="mbg" label="Between items" hint={cfg.combined ? undefined : "Room on each side of every menu-bar item."} min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`} live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
+      </Card>
     </div>
   )
 }
@@ -1343,7 +1343,7 @@ function DiskAlert({ cfg, save }: { cfg: MenuBarCfg; save: (c: MenuBarCfg) => vo
   return (
     <Card title="Alert">
       <div class="field"><label for="mbdk">Notify when the disk is filling up<div class="hint" style={{ margin: 0 }}>At 80% and 90% full.</div></label>
-        <input id="mbdk" type="checkbox" checked={cfg.alerts.disk} onChange={(e) => save({ ...cfg, alerts: { ...cfg.alerts, disk: e.currentTarget.checked } })} /></div>
+        <input id="mbdk" type="checkbox" checked={cfg.alerts.disk_alert} onChange={(e) => save({ ...cfg, alerts: { ...cfg.alerts, disk_alert: e.currentTarget.checked } })} /></div>
     </Card>
   )
 }

@@ -39,6 +39,9 @@ pub struct MenuBar {
     pub combined: bool,
     /// Agent status ring in state colours (orange, red, green) instead of the menu bar's colour.
     pub ring_color: bool,
+    /// Drawn as its own menu-bar item (set by the app, not saved).
+    #[serde(skip)]
+    pub solo: bool,
 }
 
 /// Banners and sounds for agent status, each event on its own. Sound "" = none, else a macOS
@@ -54,8 +57,9 @@ pub struct Alerts {
     pub wait_sound_on: bool,
     /// No "finished" alert for tasks shorter than this (quick replies need no ping).
     pub min_seconds: u32,
-    /// A notification when the disk passes 80% and 90% full.
-    pub disk: bool,
+    /// A notification when the disk passes 80% and 90% full; off unless turned on (it used to be
+    /// on, under the name `disk`, and came at every start on a full disk).
+    pub disk_alert: bool,
 }
 
 impl Alerts {
@@ -68,7 +72,7 @@ impl Alerts {
 
 impl Default for Alerts {
     fn default() -> Self {
-        Alerts { done_banner: true, done_sound: "Glass".into(), done_sound_on: true, wait_banner: true, wait_sound: "Ping".into(), wait_sound_on: true, min_seconds: 20, disk: true }
+        Alerts { done_banner: true, done_sound: "Glass".into(), done_sound_on: true, wait_banner: true, wait_sound: "Ping".into(), wait_sound_on: true, min_seconds: 20, disk_alert: false }
     }
 }
 
@@ -135,7 +139,7 @@ impl Default for MenuBar {
         MenuBar {
             // First launch: three items, normal size and spacing, the menu bar's own colour.
             items: vec!["agent".into(), "net".into(), "temp".into()], layout: "row".into(), size: "small".into(), spacing: "normal".into(), labels: true, net_stack: true, scale: 1.2, gap: 0.0,
-            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(), combined: false, ring_color: false,
+            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(), combined: false, ring_color: false, solo: false,
         }
     }
 }
@@ -259,7 +263,7 @@ pub fn units(cfg: &MenuBar, v: &Values) -> Vec<Unit> {
                 // State colours are optional; by default the ring uses the menu bar's own colour and
                 // the shapes alone tell the states apart (turning ring, !, ✓).
                 let own = cfg.ring_color.then(|| a.rgb());
-                let mut u = unit(Icon::AgentRing(a, v.tick % 8, own), if word { if n > 1 { format!("{} {n}", a.word()) } else { a.word().into() } } else { String::new() });
+                let mut u = unit(Icon::AgentRing(a, v.tick % RING_STEPS, own), if word { if n > 1 { format!("{} {n}", a.word()) } else { a.word().into() } } else { String::new() });
                 if u.color.is_none() {
                     u.color = own;
                 }
@@ -684,7 +688,7 @@ impl Canvas<'_> {
                 // A faint full ring, and a bright 3/4 arc whose gap turns a step each redraw.
                 let faint = [col[0], col[1], col[2]];
                 self.fill_alpha(bx, faint, 0.32, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0);
-                let start = phase as f32 * std::f32::consts::FRAC_PI_4;
+                let start = phase as f32 * std::f32::consts::TAU / RING_STEPS as f32;
                 self.fill(bx, col, |px, py| {
                     let on_ring = (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0;
                     let ang = ((py - cy).atan2(px - cx) - start).rem_euclid(std::f32::consts::TAU);
@@ -786,6 +790,12 @@ impl Canvas<'_> {
 #[cfg(test)]
 pub const FONTS: [&str; 12] = ["system", "rounded", "mono", "newyork", "helvetica", "menlo", "monaco", "din", "futura", "avenir", "georgia", "verdana"];
 
+/// Steps in one turn of the working ring (one step per redraw, see RING_MS).
+pub const RING_STEPS: u8 = 24;
+/// Milliseconds between redraws while the ring turns: 24 × 80 ms, one turn in about 2 s, in 15°
+/// steps (it was 45° steps, 4 a second: choppy). Smoother still costs noticeably more CPU.
+pub const RING_MS: u64 = 80;
+
 /// RGBA image, 36 px high = 18 pt menu bar at 2x. Items without their own colour are drawn in `fg`
 /// (only the alpha matters for a template image).
 #[cfg(target_os = "macos")]
@@ -821,7 +831,9 @@ pub fn render(cfg: &MenuBar, units: &[Unit], fg: [u8; 3]) -> Option<(Vec<u8>, u3
             })
             .collect()
     };
-    let width = (bw.iter().sum::<f32>() + gap * (bl.len() - 1) as f32).ceil() as usize + 4;
+    // Separate items: the spacing is room on both sides of each item (macOS places the items).
+    let pad = if cfg.solo { gap / 2.0 } else { 0.0 };
+    let width = (bw.iter().sum::<f32>() + gap * (bl.len() - 1) as f32 + 2.0 * pad).ceil() as usize + 4;
     canvas.rgba = vec![0u8; width * height * 4];
     canvas.width = width;
     let center = |px: f32| {
@@ -830,7 +842,7 @@ pub fn render(cfg: &MenuBar, units: &[Unit], fg: [u8; 3]) -> Option<(Vec<u8>, u3
     };
     // Two-line baselines in 36 px: the bottom line sits on the bottom edge, the top one a line above.
     let bottom = height as i32 - 2;
-    let mut x = 2.0_f32;
+    let mut x = 2.0 + pad;
     for (b, bwid) in bl.iter().zip(&bw) {
         match b {
             Block::One(u) => {

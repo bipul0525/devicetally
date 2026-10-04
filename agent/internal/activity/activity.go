@@ -17,6 +17,7 @@ type Hook struct {
 	SessionID string `json:"session_id"`
 	Cwd       string `json:"cwd"`
 	Message   string `json:"message"`
+	Prompt    string `json:"prompt"`
 	Tool      string `json:"-"` // "" = Claude Code
 }
 
@@ -27,6 +28,7 @@ type Status struct {
 	Project string `json:"project"`
 	Tool    string `json:"tool,omitempty"`    // "" = Claude Code, "codex"
 	Started int64  `json:"started,omitempty"` // ms, when the current task began (the prompt)
+	Prompt  string `json:"prompt,omitempty"`  // the start of that prompt, for the "finished" notification (stays on this computer)
 }
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
@@ -49,6 +51,7 @@ func Record(dir string, h Hook, now int64) {
 	case "UserPromptSubmit":
 		next.State = "working"
 		next.Started = now
+		next.Prompt = short(h.Prompt)
 	case "Stop":
 		next.State = "done"
 	case "Notification":
@@ -71,6 +74,15 @@ func Record(dir string, h Hook, now int64) {
 	if os.WriteFile(tmp, b, 0o600) == nil {
 		os.Rename(tmp, path)
 	}
+}
+
+// short is the prompt's first line-ish: whitespace collapsed, at most 80 characters.
+func short(p string) string {
+	r := []rune(strings.Join(strings.Fields(p), " "))
+	if len(r) > 80 {
+		return strings.TrimSpace(string(r[:79])) + "…"
+	}
+	return string(r)
 }
 
 // Prune removes session files not touched for two days.

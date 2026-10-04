@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.2
+
+- **"Finished" notifications say which prompt is done:** "Claude Code finished · devicetally — Done: “fix the menu bar freeze” · took 3 min". The prompt's start stays on your computer.
+- **The disk-full notification is off by default.** It came at every start on a full disk and looked like an agent notification. Turn it on under Menu bar → Disk.
+- **The working ring turns smoothly** (15° steps, 12 times a second, instead of 45° steps 4 times a second), and only the ring is redrawn between updates.
+- **Spacing works with separate items too:** Menu bar → General → Spacing adds room on both sides of every item.
+
 ## 1.2.1
 
 - **Fixed: adding or removing a menu-bar item could freeze DeviceTally** (it had to be force-quit). All menu-bar changes now happen one at a time on the app's main thread.

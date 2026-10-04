@@ -2,6 +2,7 @@ package activity
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,5 +43,19 @@ func TestStatesFollowClaudeCode(t *testing.T) {
 	Record(dir, Hook{Event: "Stop", SessionID: "../escape"}, 5000)
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
 		t.Fatalf("only s1 should exist, got %d files", len(entries))
+	}
+}
+
+func TestKeepsThePromptStartForTheFinishedNotification(t *testing.T) {
+	dir := t.TempDir()
+	Record(dir, Hook{Event: "UserPromptSubmit", SessionID: "s2", Prompt: "  fix the\nmenu bar   freeze "}, 1000)
+	Record(dir, Hook{Event: "Stop", SessionID: "s2"}, 2000)
+	if s := read(t, dir, "s2"); s.Prompt != "fix the menu bar freeze" {
+		t.Fatalf("prompt kept through Stop, one line, got %q", s.Prompt)
+	}
+	long := "ü" + fmt.Sprintf("%0200d", 0)
+	Record(dir, Hook{Event: "UserPromptSubmit", SessionID: "s2", Prompt: long}, 3000)
+	if p := []rune(read(t, dir, "s2").Prompt); len(p) != 80 || p[79] != '…' {
+		t.Fatalf("long prompt cut to 80 characters, got %d", len(p))
 	}
 }

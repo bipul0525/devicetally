@@ -58,7 +58,7 @@ struct AppState {
     last_sample: Mutex<Option<std::time::Instant>>,
     // Separate menu-bar items (one per module, macOS): which exist, in order, and their last images.
     tray_items: Mutex<Vec<String>>,
-    item_icons: Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    item_icons: Mutex<std::collections::HashMap<String, (Vec<u8>, bool)>>, // image, template
     // Which panel the popover shows ("all" for the combined item).
     panel: Mutex<String>,
     // Recent readings for the panels' graphs (about 3 minutes).
@@ -232,7 +232,7 @@ fn disk_check(app: &AppHandle) {
     }
     let level = storage::alert_level(1.0 - s.disk_free as f64 / s.disk_total as f64);
     let mut done = state.disk_alerted.lock().unwrap();
-    if cfg.disk && level > *done {
+    if cfg.disk_alert && level > *done {
         notify_user(app, &format!("Disk {level}% full"), &format!("{} free. Open DeviceTally → Storage to see what's using space.", stats::bytes(s.disk_free)), cfg.sound(true));
     }
     *done = level;
@@ -580,7 +580,7 @@ fn draw_menubar(app: &AppHandle) {
     let fresh = state.last_sample.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_millis(1800));
     let values = menubar::Values {
         agent,
-        tick: ((now_ms() / 250) % 8) as u8,
+        tick: ((now_ms() as u64 / menubar::RING_MS) % menubar::RING_STEPS as u64) as u8,
         tokens: state.tokens_today.lock().unwrap().clone(),
         stats: if needs_stats && fresh {
             state.last_stats.lock().unwrap().clone()
@@ -623,7 +623,7 @@ fn draw_menubar(app: &AppHandle) {
         cfg.items
             .iter()
             .map(|item| {
-                let one = menubar::MenuBar { items: vec![item.clone()], ..cfg.clone() };
+                let one = menubar::MenuBar { items: vec![item.clone()], solo: true, ..cfg.clone() };
                 let u = menubar::units(&one, &values);
                 let colored = one.colored() || u.iter().any(|x| x.color.is_some());
                 let fg = if colored && dark_mode() { [255, 255, 255] } else { [0, 0, 0] };
@@ -645,6 +645,33 @@ fn draw_menubar(app: &AppHandle) {
     // menu bar now runs on the main thread, one update at a time.
     let app2 = app.clone();
     let _ = app.run_on_main_thread(move || apply_menubar(&app2, &want, drawn, tip));
+}
+
+/// Between full redraws while the ring turns: redraws only the Agent status item (separate items on
+/// macOS). Redrawing every item 20 times a second cost ~12% CPU. False when a full redraw is needed.
+fn draw_ring(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    let cfg = state.config.lock().unwrap().menubar.clone();
+    if !cfg!(target_os = "macos") || cfg.combined || !cfg.items.iter().any(|i| i == "agent") {
+        return false;
+    }
+    let sessions = activity::read(&agent_dir().join("activity"));
+    let agent = activity::agent(&sessions, now_ms(), *state.activity_seen.lock().unwrap());
+    if agent.0 != menubar::Agent::Working {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let values = menubar::Values { agent, tick: ((now_ms() as u64 / menubar::RING_MS) % menubar::RING_STEPS as u64) as u8, tokens: None, stats: Default::default(), now: chrono::Local::now().naive_local() };
+        let one = menubar::MenuBar { items: vec!["agent".into()], solo: true, ..cfg.clone() };
+        let u = menubar::units(&one, &values);
+        let colored = one.colored() || u.iter().any(|x| x.color.is_some());
+        let fg = if colored && dark_mode() { [255, 255, 255] } else { [0, 0, 0] };
+        let d = menubar::render(&one, &u, fg).map(|(rgba, w, h)| Drawn { rgba, w, h, colored, tip: format!("DeviceTally: {}", menubar::text(&u)) });
+        let (app2, want) = (app.clone(), cfg.items.clone());
+        let _ = app.run_on_main_thread(move || apply_menubar(&app2, &want, vec![("agent".into(), d)], String::new()));
+    }
+    true
 }
 
 /// One menu-bar image, drawn and ready to show.
@@ -677,12 +704,16 @@ fn apply_menubar(app: &AppHandle, want: &[String], drawn: Vec<(String, Option<Dr
                     let _ = t.set_visible(true);
                 }
                 let _ = t.set_tooltip(Some(&d.tip));
-                if icons.get(&item) != Some(&d.rgba) {
+                let prev = icons.get(&item);
+                if prev.map(|p| &p.0) != Some(&d.rgba) {
+                    // set_icon_as_template redraws the image, so it's called only when it changes.
                     let _ = t.set_icon(Some(tauri::image::Image::new_owned(d.rgba.clone(), d.w, d.h)));
-                    let _ = t.set_icon_as_template(!d.colored);
-                    let _ = t.set_title(None::<&str>);
+                    if prev.map(|p| p.1) != Some(!d.colored) {
+                        let _ = t.set_icon_as_template(!d.colored);
+                        let _ = t.set_title(None::<&str>);
+                    }
                     fit_height(&t, d.w, d.h);
-                    icons.insert(item, d.rgba);
+                    icons.insert(item, (d.rgba, !d.colored));
                 }
             }
             // Nothing to show (e.g. no temperature sensor, no battery): hide that item.
@@ -743,7 +774,9 @@ async fn set_menubar_live(app: AppHandle, state: State<'_, AppState>, cfg: menub
 
 /// What a configuration would look like, for the live preview in Settings: RGBA pixels at 2x.
 #[tauri::command]
-async fn menubar_preview(state: State<'_, AppState>, cfg: menubar::MenuBar) -> Result<Value, String> {
+async fn menubar_preview(state: State<'_, AppState>, mut cfg: menubar::MenuBar) -> Result<Value, String> {
+    // One item of separate items: drawn with its own spacing, as in the menu bar.
+    cfg.solo = !cfg.combined && cfg.items.len() == 1;
     // Uses the latest reading; a fresh sample per preview made the numbers jump and cost CPU.
     let mut stats = {
         let last = state.last_stats.lock().unwrap().clone();
@@ -755,7 +788,7 @@ async fn menubar_preview(state: State<'_, AppState>, cfg: menubar::MenuBar) -> R
     let sessions = activity::read(&agent_dir().join("activity"));
     let values = menubar::Values {
         agent: activity::agent(&sessions, now_ms(), *state.activity_seen.lock().unwrap()),
-        tick: ((now_ms() / 250) % 8) as u8,
+        tick: ((now_ms() as u64 / menubar::RING_MS) % menubar::RING_STEPS as u64) as u8,
         tokens: state.tokens_today.lock().unwrap().clone().or(Some("151M".into())),
         stats,
         now: chrono::Local::now().naive_local(),
@@ -1695,10 +1728,15 @@ pub fn run() {
                 }
             });
             tauri::async_runtime::spawn(async move {
+                let mut last_full = std::time::Instant::now();
                 loop {
                     let fast = h2.state::<AppState>().animating.load(std::sync::atomic::Ordering::Relaxed);
-                    tokio::time::sleep(Duration::from_millis(if fast { 250 } else { 2000 })).await;
-                    draw_menubar(&h2);
+                    tokio::time::sleep(Duration::from_millis(if fast { menubar::RING_MS } else { 2000 })).await;
+                    // Everything every 2 s; in between only the turning ring.
+                    if !fast || last_full.elapsed() >= Duration::from_secs(2) || !draw_ring(&h2) {
+                        draw_menubar(&h2);
+                        last_full = std::time::Instant::now();
+                    }
                 }
             });
             Ok(())
