@@ -299,6 +299,8 @@ cd worker && npm ci && npm test        # server (Cloudflare Worker, runs in work
 cd app && npm ci && npm run app        # app (Tauri: Rust + Preact); tests: cargo test in app/src-tauri
 ```
 
+**Try the app locally before releasing:** quit DeviceTally, then `cd app && npm run try`. The real app opens with your own data; UI changes in `app/src` show up as soon as you save, and changes in `app/src-tauri` rebuild and restart it (20–60 s). Press Ctrl+C in the terminal to stop.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md). Design notes are in [docs/dev](docs/dev).
 
 ## Credits
