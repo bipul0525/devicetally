@@ -60,6 +60,9 @@ jobs:
           releaseDraft: false
           # latest.json is written once by the updater-json job below (parallel writes lost entries).
           uploadUpdaterJson: false
+          # Uploading races with the other release jobs (an asset it means to replace can be gone by
+          # the time it deletes it: "Not Found"); retry instead of failing the platform.
+          retryAttempts: 3
 
   # The in-app updater's latest.json, written once after every platform has uploaded.
   updater-json:
