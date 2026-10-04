@@ -395,7 +395,7 @@ function DeviceDetails({ d, settings, saved }: { d: Device; settings: SettingRow
       <div class="hint" style={{ margin: 0 }}>
         {h?.disk_total ? <>Disk {gbText(h.disk_free ?? 0)} free of {gbText(h.disk_total)}{d.disk_full_in_days != null && <b class={d.disk_full_in_days < 30 ? 'warn' : ''}> · full in about {d.disk_full_in_days < 14 ? `${d.disk_full_in_days} days` : `${Math.round(d.disk_full_in_days / 7)} weeks`}</b>}</> : null}
         {h?.app && <> · App {h.app}</>}{d.health_at ? <> · reported {ago(d.health_at)}</> : null}
-        {' · '}Projects: {allowed.length ? allowed.map(name).join(', ') : 'any'} <button class="link-btn" onClick={() => setEditing(allowed)}>Change…</button>
+        {' · '}Projects: {allowed.length ? allowed.map(name).join(', ') : 'any'} <button class="link-btn" onClick={() => setEditing(allowed)}>Change</button>
       </div>
       {editing && (
         <div class="allowed-editor">
@@ -578,7 +578,7 @@ function Highlight({ text }: { text: string }) {
 }
 
 // Admin only, reached from Settings: prompts by device and day, newest first.
-const PROMPT_RANGES = [['1', 'Today'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', 'Year'], ['custom', 'Dates…']] as const
+const PROMPT_RANGES = [['1', 'Today'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', 'Year'], ['custom', 'Dates']] as const
 
 function PromptsView({ back }: { back: () => void }) {
   const [text, setText] = useState('')
@@ -738,10 +738,10 @@ function ConnectionGroup({ st, refresh }: { st: Status; refresh: () => void }) {
                 {saved.map((x) => <option key={x} value={x}>{x.replace(/^https?:\/\//, '')}</option>)}
               </select></label>
             ) : <span>Admin · {st.server.replace(/^https?:\/\//, '')}</span>}
-            <span><button class="btn" onClick={() => setMode('signin')}>Add server…</button> <button class="btn" disabled={busy} onClick={run(() => invoke('sign_out'))}>Sign out</button></span>
+            <span><button class="btn" onClick={() => setMode('signin')}>Add server</button> <button class="btn" disabled={busy} onClick={run(() => invoke('sign_out'))}>Sign out</button></span>
           </div>
         ) : mode === 'none' ? (
-          <div class="field"><span class="val">Admin</span><span><button class="btn" onClick={() => setMode('signin')}>Sign in</button> <button class="btn" onClick={() => setMode('create')}>New server…</button></span></div>
+          <div class="field"><span class="val">Admin</span><span><button class="btn" onClick={() => setMode('signin')}>Sign in</button> <button class="btn" onClick={() => setMode('create')}>New server</button></span></div>
         ) : (
           <form onSubmit={run(() => mode === 'signin' ? invoke('sign_in', { server, email: f.email, password: f.password })
             : invoke('create_admin', { server, token: f.token, email: f.email, password: f.password, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }))}>
@@ -784,8 +784,8 @@ function LockGroup() {
           {st.locked ? 'Claude Code always runs DeviceTally\'s hooks here, in every settings folder, terminal and editor. Changing that needs this Mac\'s admin password.'
             : 'Puts DeviceTally\'s hooks in Claude Code\'s system-wide settings, so tracking can\'t be turned off or bypassed with another settings folder without this Mac\'s admin password.'}</div></span>
           {st.supported && (st.locked
-            ? <span>{st.outdated && <button class="btn primary" disabled={busy} onClick={run('lock_computer', opts)}>Update lock</button>} <button class="btn" disabled={busy} onClick={run('unlock_computer')}>Unlock…</button></span>
-            : <button class="btn primary" disabled={busy} onClick={run('lock_computer', opts)}>{busy ? 'Waiting for the password…' : 'Lock…'}</button>)}
+            ? <span>{st.outdated && <button class="btn primary" disabled={busy} onClick={run('lock_computer', opts)}>Update lock</button>} <button class="btn" disabled={busy} onClick={run('unlock_computer')}>Unlock</button></span>
+            : <button class="btn primary" disabled={busy} onClick={run('lock_computer', opts)}>{busy ? 'Waiting for the password…' : 'Lock'}</button>)}
         </div>
         {st.outdated && <div class="field"><span class="warn">The locked tracker is older than this app. Update the lock to use the new one.</span></div>}
         {!st.locked && st.supported && <>
@@ -858,11 +858,11 @@ function AdminSettings({ openPrompts }: { openPrompts: () => void }) {
             ) : (
               <><input type="date" aria-label="From" value={del.from} onInput={(e) => setDel({ ...del, from: e.currentTarget.value })} /><input type="date" aria-label="To" value={del.to} onInput={(e) => setDel({ ...del, to: e.currentTarget.value })} /></>
             )}
-            <button class="btn" disabled={del.scope === 'device' ? !del.id : !(del.from && del.to)} onClick={() => setDelConfirm('')}>Delete…</button></span></div>
+            <button class="btn" disabled={del.scope === 'device' ? !del.id : !(del.from && del.to)} onClick={() => setDelConfirm('')}>Delete</button></span></div>
           {delConfirm !== null && <div class="field"><span>This permanently deletes the selected data. Type DELETE to confirm.</span><span class="inline-confirm">
             <input aria-label="Type DELETE" value={delConfirm} onInput={(e) => setDelConfirm(e.currentTarget.value)} />
             <button class="btn danger" disabled={delConfirm !== 'DELETE'} onClick={doDelete}>Delete</button><button class="btn" onClick={() => setDelConfirm(null)}>Cancel</button></span></div>}
-          <div class="field"><span>Prompts</span><button class="btn" onClick={openPrompts}>View prompts…</button></div>
+          <div class="field"><span>Prompts</span><button class="btn" onClick={openPrompts}>View prompts</button></div>
           <div class="field"><span>Sign out on every computer</span><button class="btn" onClick={async () => { await api('/auth/logout-everywhere', 'POST', {}); location.reload() }}>Sign out everywhere</button></div>
         </div>
       </section>
@@ -941,7 +941,7 @@ function DeviceSettings({ st, refresh }: { st: Status; refresh: () => void }) {
         ) : req.requested_at ? (
           <div class="field"><span>✓ Request sent {ago(req.requested_at)}.<div class="hint" style={{ margin: 0 }}>The admin sees it under Devices. This computer keeps tracking until they approve.</div></span><button class="btn" disabled={busy} onClick={run(() => api('/disconnect-request', 'DELETE'))}>Cancel request</button></div>
         ) : (
-          <div class="field"><span>Stop tracking<div class="hint" style={{ margin: 0 }}>The admin approves this from their Devices list.</div></span><button class="btn" disabled={busy} onClick={run(() => api('/disconnect-request', 'POST', {}))}>Ask the admin to disconnect…</button></div>
+          <div class="field"><span>Stop tracking<div class="hint" style={{ margin: 0 }}>The admin approves this from their Devices list.</div></span><button class="btn" disabled={busy} onClick={run(() => api('/disconnect-request', 'POST', {}))}>Ask the admin to disconnect</button></div>
         )}
       </div>
       {err && <p class="err" role="alert">{err}</p>}
@@ -993,7 +993,7 @@ function ServerGroup() {
     <section class="section"><h2>Server</h2>
       <div class="group">
         <div class="field"><span>Server version</span><span class="val">{meta.data?.version ?? (meta.error ? 'older version' : '…')}{outdated ? ` · ${bundled} available` : meta.data ? ' · up to date' : ''}</span></div>
-        {!open && <div class="field"><span>{outdated ? `Update to ${bundled}` : 'Reinstall the server code'}</span><button class={outdated ? 'btn primary' : 'btn'} onClick={() => { setOpen(true); setMsg('') }}>Update server…</button></div>}
+        {!open && <div class="field"><span>{outdated ? `Update to ${bundled}` : 'Reinstall the server code'}</span><button class={outdated ? 'btn primary' : 'btn'} onClick={() => { setOpen(true); setMsg('') }}>Update server</button></div>}
         {open && <UpdateServerForm close={() => setOpen(false)} done={() => { setOpen(false); setMsg('Server updated.'); meta.reload(); window.dispatchEvent(new Event('dt:server-updated')) }} />}
       </div>
       {msg && <p class="hint" role="status">{msg}</p>}
@@ -1011,10 +1011,11 @@ type MenuBarCfg = { items: string[]; layout: 'row' | 'stacked' | 'top'; size: st
 /** One alert event: notification on/off, sound on/off, which sound (▶ to hear it), and a test. */
 function AlertRow({ title, hint, banner, soundOn, sound, onBanner, onSoundOn, onSound, test }: {
   title: string; hint: string; banner: boolean; soundOn: boolean; sound: string
-  onBanner: (v: boolean) => void; onSoundOn: (v: boolean) => void; onSound: (v: string) => void; test: () => void
+  onBanner: (v: boolean) => void; onSoundOn: (v: boolean) => void; onSound: (v: string) => void; test: () => Promise<string>
 }) {
   const [sounds, setSounds] = useState<string[]>([])
   const [sent, setSent] = useState(false)
+  const [result, setResult] = useState('')
   useEffect(() => { invoke<string[]>('list_sounds').then(setSounds, () => {}) }, [])
   return (
     <div class="field alert-row">
@@ -1026,8 +1027,14 @@ function AlertRow({ title, hint, banner, soundOn, sound, onBanner, onSoundOn, on
           {(sounds.includes(sound) || !sound ? sounds : [sound, ...sounds]).map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
         <button class="btn" title="Hear the sound" disabled={!soundOn} onClick={() => invoke('preview_sound', { name: sound })}>▶</button>
-        <button class="btn" disabled={!banner && !soundOn} onClick={() => { test(); setSent(true); setTimeout(() => setSent(false), 3000) }}>{sent ? 'Sent ✓' : 'Send a test'}</button>
+        <button class="btn" disabled={!banner && !soundOn} onClick={async () => { setSent(true); setResult(await test()); setSent(false) }}>{sent ? 'Sending…' : 'Send a test'}</button>
       </span>
+      {result && <div class="test-result">{
+        result === 'system' ? <span>✓ Sent. Didn't see it? A Focus mode (Do Not Disturb) hides banners.</span>
+        : result === 'card' ? <span>✓ Shown in the top-right corner.</span>
+        : result === 'shown' ? <span>✓ Played.</span>
+        : <span class="warn">Couldn't show it ({result.replace('fallback:', '')}).</span>
+      }</div>}
     </div>
   )
 }
@@ -1101,6 +1108,89 @@ function Preview({ cfg }: { cfg: MenuBarCfg }) {
   )
 }
 
+type ItemImg = { k: string; light: string; dark: string; w: number; h: number }
+
+/** A realistic macOS menu bar with your items as they're drawn. Separate items are separate
+ *  images you can click to select; the combined item is one image. Light or dark follows the system,
+ *  and can be flipped. At most one render round is in flight while a slider moves. */
+function BarPreview({ cfg, sel, select }: { cfg: MenuBarCfg; sel: string; select: (k: string) => void }) {
+  const [imgs, setImgs] = useState<ItemImg[] | null>(null)
+  const [hidden, setHidden] = useState(0)
+  const [dark, setDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches)
+  const want = useRef(cfg), busy = useRef(false), alive = useRef(true)
+  const pump = () => {
+    if (busy.current || !alive.current) return
+    busy.current = true
+    const asked = want.current
+    const groups = asked.combined ? [{ k: 'all', cfg: asked }] : asked.items.map((k) => ({ k, cfg: { ...asked, items: [k] } }))
+    Promise.all(groups.map((g) => invoke<PreviewImg>('menubar_preview', { cfg: g.cfg }).then((r) => ({ k: g.k, r }))))
+      .then((rs) => {
+        if (!alive.current) return
+        setHidden(rs.reduce((a, x) => a + (x.r.hidden ?? 0), 0))
+        setImgs(rs.filter((x) => x.r.width && x.r.light && x.r.dark).map((x) => ({ k: x.k, light: toUrl(x.r.light!, x.r.width, x.r.height), dark: toUrl(x.r.dark!, x.r.width, x.r.height), w: x.r.width, h: x.r.height })))
+      }, () => {})
+      .finally(() => { busy.current = false; if (want.current !== asked) pump() })
+  }
+  useEffect(() => { want.current = cfg; pump() }, [cfg])
+  useEffect(() => { alive.current = true; const t = setInterval(pump, 2000); return () => { alive.current = false; clearInterval(t) } }, [])
+  const total = (imgs ?? []).reduce((a, x) => a + x.w / 2, 0)
+  return (
+    <div class="bar-preview">
+      <div class={`fake-bar ${dark ? 'dark' : 'light'}`}>
+        <span class="fake-menus"><b></b><b>Finder</b><span>File</span><span>Edit</span><span>View</span></span>
+        <span class="fake-items">
+          {!imgs?.length && <span class="hint" style={{ margin: 0 }}>{cfg.items.length ? '' : 'Only the DeviceTally icon. Turn on an item on the left.'}</span>}
+          {(imgs ?? []).map((x) => (
+            <button key={x.k} class={`fake-item ${sel === x.k || (x.k === 'all' && sel === 'general') ? 'sel' : ''}`} title={x.k === 'all' ? 'Combined item' : `${MB_ITEMS.find((m) => m[0] === x.k)?.[1]}: click to change`} onClick={() => select(x.k === 'all' ? 'general' : x.k)}>
+              <img alt="" src={dark ? x.dark : x.light} style={{ width: `${x.w / 2}px`, height: `${x.h / 2}px` }} />
+            </button>
+          ))}
+          <svg class="fake-sys" width="17" height="13" viewBox="0 0 17 13" aria-hidden="true"><path d="M8.5 11.5l2-2.3a3 3 0 0 0-4 0zM4.3 7.2a6 6 0 0 1 8.4 0l1.3-1.5a8 8 0 0 0-11 0zM1.7 4.3a9.6 9.6 0 0 1 13.6 0l1.2-1.4a11.5 11.5 0 0 0-16 0z" fill="currentColor" /></svg>
+          <span class="fake-clock">Sat 9:41</span>
+        </span>
+      </div>
+      <div class="bar-caption">
+        <span class="hint" style={{ margin: 0 }}>Real size · {Math.round(total)} pt{cfg.combined ? '' : ' · click an item to change it'}
+          {hidden > 0 && <b class="warn"> · {hidden} left out to fit the maximum width</b>}</span>
+        <Seg label="Menu bar" value={dark ? 'dark' : 'light'} options={[['light', 'Light'], ['dark', 'Dark']] as const} onChange={(v) => setDark(v === 'dark')} />
+      </div>
+    </div>
+  )
+}
+
+/** Visual choices: each option shows a small example instead of a plain word. */
+function Tiles<T extends string>({ value, options, onChange, label }: { value: T; options: [T, ComponentChildren, string][]; onChange: (v: T) => void; label: string }) {
+  return (
+    <div class="tiles" role="radiogroup" aria-label={label}>
+      {options.map(([v, sample, name]) => (
+        <button key={v} type="button" role="radio" aria-checked={value === v} class={`tile ${value === v ? 'on' : ''}`} onClick={() => onChange(v)}>
+          <span class="tile-sample">{sample}</span><span class="tile-name">{name}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// Example values for the tiles (what each item looks like with a label, an icon, or neither).
+const SAMPLE: Record<string, [string, string]> = { tokens: ['T', '48M'], net: ['↑', '2.4M'], cpu: ['CPU', '23%'], temp: ['TEMP', '47°'], mem: ['MEM', '61%'], disk: ['SSD', '212G'], battery: ['BAT', '82%'], clock: ['', '9:41'] }
+const SampleIcon = ({ k }: { k: string }) => <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{NAV_ICON[k]}</svg>
+const Ring = ({ word }: { word?: boolean }) => <span class="ring-sample"><svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor" /><path d="M4.8 8.3l2 2 4.3-4.6" fill="none" stroke="var(--bg-tile, #fff)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>{word && <span>Done</span>}</span>
+
+const SIZE_PRESETS: [number, string][] = [[70, 'Small'], [100, 'Normal'], [140, 'Large'], [200, 'Max']]
+function SizeControl({ id, value, live, save }: { id: string; value: number; live: (v: number) => void; save: (v: number) => void }) {
+  return (
+    <div class="size-ctl">
+      <div class="seg presets" role="group" aria-label="Size presets">
+        {SIZE_PRESETS.map(([v, l]) => <button key={v} aria-pressed={value === v} onClick={() => save(v)}>{l}</button>)}
+      </div>
+      <span class="slider"><input id={id} type="range" min={50} max={200} step={5} value={value} aria-label="Size"
+        onInput={(e) => live(Number(e.currentTarget.value))} onChange={(e) => save(Number(e.currentTarget.value))} /><b class="num">{value}%</b></span>
+    </div>
+  )
+}
+
+const Card = ({ title, children }: { title: string; children: ComponentChildren }) => <section class="mb-card"><h3>{title}</h3><div class="group">{children}</div></section>
+
 /** A slider row: shows the value while dragging, calls `live` on every move and `save` on release. */
 function Slider({ id, label, hint, min, max, step, value, fmt, live, save, reset }: {
   id: string; label: string; hint?: string; min: number; max: number; step: number; value: number; fmt: (v: number) => string
@@ -1121,7 +1211,7 @@ const LABEL_OPTS: Record<string, [ItemStyle['label'], string][]> = {
   battery: [['', 'Default'], ['text', 'Text'], ['icon', 'Icon'], ['inside', 'In icon'], ['none', 'None']],
 }
 const ITEM_HINT: Record<string, string> = {
-  agent: 'What your coding agents are doing: working, needs you (a permission or question), done (until you open DeviceTally from the menu bar) or idle. Claude Code and Codex.',
+  agent: 'What your coding agents are doing, with notifications and sounds when a task finishes or needs you. Claude Code and Codex.',
   tokens: "Today's tokens across your tracked accounts.",
   net: 'Upload and download speed of this computer.',
   cpu: 'How busy the processor is.',
@@ -1132,74 +1222,90 @@ const ITEM_HINT: Record<string, string> = {
   clock: 'Time, and optionally the day and date.',
 }
 
-/** One item's settings. Every value here is the item's own: nothing is inherited from elsewhere. */
+/** One item's settings, in cards: what it shows, its size, its colours (and the clock's format). */
 function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c: MenuBarCfg) => void; live: (c: MenuBarCfg) => void }) {
   const name = MB_ITEMS.find((x) => x[0] === k)![1]
   const on = cfg.items.includes(k)
   const st = { ...NO_STYLE, ...cfg.styles?.[k] }
   const with_ = (patch: Partial<ItemStyle>) => ({ ...cfg, styles: { ...cfg.styles, [k]: { ...st, ...patch } } })
-  const i = cfg.items.indexOf(k)
-  const move = (d: number) => {
-    const items = [...cfg.items]; [items[i], items[i + d]] = [items[i + d], items[i]]
-    save({ ...cfg, items })
-  }
   const c = cfg.clock
   const clock = (patch: Partial<ClockCfg>) => save({ ...cfg, clock: { ...c, ...patch } })
   const layout = st.layout || 'row'
   const insideBattery = k === 'battery' && st.label === 'inside'
+  const [lab, val] = SAMPLE[k] ?? ['', '']
+  const labelTiles: [ItemStyle['label'], ComponentChildren, string][] = k === 'agent'
+    ? [['', <Ring />, 'Ring'], ['text', <Ring word />, 'Ring + word']]
+    : k === 'clock'
+      ? [['', <span>{val}</span>, 'Time only'], ['icon', <><SampleIcon k="clock" /> {val}</>, 'With icon']]
+      : k === 'net'
+        ? [['', <span>{cfg.labels ? '↑ ' : ''}{val}</span>, 'Default'], ['text', <span>↑ {val}</span>, 'Arrows'], ['none', <span>{val}</span>, 'None']]
+        : [['', <span>{cfg.labels ? <small>{lab} </small> : null}{val}</span>, 'Default'], ['text', <span><small>{lab} </small>{val}</span>, 'Text'], ['icon', <><SampleIcon k={k} /> {val}</>, 'Icon'],
+          ...(k === 'battery' ? [['inside', <span class="bat-sample">{val.replace('%', '')}</span>, 'In icon'] as [ItemStyle['label'], ComponentChildren, string]] : []),
+          ['none', <span>{val}</span>, 'None']]
+  const layoutTiles: ['row' | 'stacked' | 'top', ComponentChildren, string][] = [
+    ['row', <span><small>{lab || 'CPU'} </small>{val}</span>, 'Side by side'],
+    ['stacked', <span class="stack2"><span><small>{lab || 'CPU'}</small> {val}</span><span><small>MEM</small> 61%</span></span>, 'Stacked'],
+    ['top', <span class="stack2 center"><small>{lab || 'CPU'}</small><span>{val}</span></span>, 'Label on top'],
+  ]
   return (
     <div class="mb-pane">
       <div class="mb-pane-head">
-        <div><h2 style={{ margin: 0 }}>{name}</h2><span class="hint" style={{ margin: 0 }}>{ITEM_HINT[k]}</span></div>
+        <div class="mb-title"><span class="mb-title-icon"><NavIcon k={k} /></span><div><h2>{name}</h2><span class="hint" style={{ margin: 0 }}>{ITEM_HINT[k]}</span></div></div>
         <label class="switch"><span>{on ? 'Shown' : 'Hidden'}</span><input type="checkbox" class="toggle" checked={on} onChange={() => save({ ...cfg, items: on ? cfg.items.filter((x) => x !== k) : [...cfg.items, k] })} /></label>
       </div>
       {on ? <>
-        <div class="group">
-          <div class="field"><span>Position</span><span>
-            <button class="btn" disabled={i <= 0} onClick={() => move(-1)}>‹ Move left</button>{' '}
-            <button class="btn" disabled={i >= cfg.items.length - 1} onClick={() => move(1)}>Move right ›</button></span></div>
-          <div class="field"><span>Label</span><Seg label="Label" value={st.label} options={LABEL_OPTS[k] ?? [['', 'Default'], ['text', 'Text'], ['icon', 'Icon'], ['none', 'None']]} onChange={(v) => save(with_({ label: v }))} /></div>
-          {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field"><span>Layout</span><Seg label="Layout" value={layout} options={[['row', 'Side by side'], ['stacked', 'Stacked'], ['top', 'Label on top']] as const} onChange={(v) => save(with_({ layout: v }))} /></div>}
+        <Card title="Show as">
+          <div class="field col"><Tiles label="Label" value={st.label as ItemStyle['label']} options={labelTiles} onChange={(v) => save(with_({ label: v }))} /></div>
+          {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field col"><span class="field-label">Layout</span><Tiles label="Layout" value={layout} options={layoutTiles} onChange={(v) => save(with_({ layout: v }))} /></div>}
           {k === 'net' && <div class="field"><label for="mbn">Upload over download<div class="hint" style={{ margin: 0 }}>One narrow column instead of two side by side.</div></label>
             <input id="mbn" type="checkbox" checked={cfg.net_stack} onChange={(e) => save({ ...cfg, net_stack: e.currentTarget.checked })} /></div>}
-          <Slider id={`sz-${k}`} label="Size" min={50} max={200} step={5} value={Math.round((st.scale || 1) * 100)} fmt={(v) => `${v}%`}
-            live={(v) => live(with_({ scale: v / 100 }))} save={(v) => save(with_({ scale: v / 100 }))} reset={st.scale && st.scale !== 1 ? () => save(with_({ scale: 0 })) : undefined} />
-          {k !== 'agent' && <div class="field"><span>{insideBattery ? 'Battery colour' : 'Number colour'}</span><ColorPick label="Number colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
+        </Card>
+        <Card title="Size">
+          <div class="field"><SizeControl id={`sz-${k}`} value={Math.round((st.scale || 1) * 100)} live={(v) => live(with_({ scale: v / 100 }))} save={(v) => save(with_({ scale: v / 100 }))} /></div>
+        </Card>
+        <Card title="Colour">
           {k === 'agent' && <div class="field"><label for="ringc">State colours<div class="hint" style={{ margin: 0 }}>Orange working, red needs you, green done. Off: the menu bar's own colour; the shapes still differ.</div></label>
             <input id="ringc" type="checkbox" checked={cfg.ring_color} onChange={(e) => save({ ...cfg, ring_color: e.currentTarget.checked })} /></div>}
-          {k === 'agent' && (st.label === 'text' || st.label === 'icon') && <div class="field"><span>Word colour</span><ColorPick label="Text colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
-          {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field"><span>{k === 'clock' ? 'Icon colour' : 'Label colour'}</span><ColorPick label="Label colour" value={st.label_color} onChange={(v) => save(with_({ label_color: v }))} /></div>}
-        </div>
-        {k === 'clock' && <div class="group" style={{ marginTop: 10 }}>
+          {(k !== 'agent' || st.label === 'text' || st.label === 'icon') && <div class="field"><span>{k === 'agent' ? 'Word' : insideBattery ? 'Battery' : 'Number'}</span><ColorPick label="Number colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
+          {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field"><span>{k === 'clock' ? 'Icon' : 'Label'}</span><ColorPick label="Label colour" value={st.label_color} onChange={(v) => save(with_({ label_color: v }))} /></div>}
+        </Card>
+        {k === 'clock' && <Card title="Format">
           <div class="field"><span>Hours</span><Seg label="Hours" value={c.hour12 ? '12' : '24'} options={[['24', '24-hour'], ['12', '12-hour']] as const} onChange={(v) => clock({ hour12: v === '12' })} /></div>
           {c.hour12 && <div class="field"><label for="ck-ampm">Show AM/PM</label><input id="ck-ampm" type="checkbox" checked={c.ampm} onChange={(e) => clock({ ampm: e.currentTarget.checked })} /></div>}
-          <div class="field"><span>Also show</span><span class="checks">
-            <label><input type="checkbox" checked={c.weekday} onChange={(e) => clock({ weekday: e.currentTarget.checked })} /> Day (Sat)</label>
-            <label><input type="checkbox" checked={c.day} onChange={(e) => clock({ day: e.currentTarget.checked })} /> Date (4)</label>
-            <label><input type="checkbox" checked={c.month} onChange={(e) => clock({ month: e.currentTarget.checked })} /> Month (Oct)</label>
-          </span></div>
-        </div>}
-        {k === 'agent' && <p class="hint">The ring shows the state: a ring that turns while an agent works, a ! when it needs you, a ✓ when it's done (until you open DeviceTally from the menu bar), a faint ring when idle. Click it in the menu bar to see each agent. Notifications and sounds: <b>Alerts</b> on the left.</p>}
-        {k !== 'agent' && <p class="hint"><b>Auto</b> colour follows the menu bar: black in light mode, white in dark mode.{(k === 'battery' || k === 'clock') && " Using DeviceTally's? You can hide macOS's own in System Settings → Control Center."}</p>}
-      </> : <p class="hint">Turn on "Show in menu bar" to add it. It goes at the end; move it from here.</p>}
+          <div class="field"><label for="ck-wd">Day of the week (Sat)</label><input id="ck-wd" type="checkbox" checked={c.weekday} onChange={(e) => clock({ weekday: e.currentTarget.checked })} /></div>
+          <div class="field"><label for="ck-d">Date (4)</label><input id="ck-d" type="checkbox" checked={c.day} onChange={(e) => clock({ day: e.currentTarget.checked })} /></div>
+          <div class="field"><label for="ck-m">Month (Oct)</label><input id="ck-m" type="checkbox" checked={c.month} onChange={(e) => clock({ month: e.currentTarget.checked })} /></div>
+        </Card>}
+        {k === 'agent' && <AgentAlerts cfg={cfg} save={save} live={live} />}
+        {k === 'disk' && <DiskAlert cfg={cfg} save={save} />}
+        <p class="hint">{k === 'agent' ? <>A ring turns while an agent works, ! when it needs you, ✓ when it's done. Click it in the menu bar to see each agent.</>
+          : <><b>Auto</b> colour follows the menu bar. Drag items in the list on the left to reorder them.{(k === 'battery' || k === 'clock') && " Using DeviceTally's? Hide macOS's own in System Settings → Control Center."}</>}</p>
+      </> : <>
+        <div class="empty-pane"><p>Not in your menu bar.</p><button class="btn primary" onClick={() => save({ ...cfg, items: [...cfg.items, k] })}>Add to menu bar</button></div>
+        {k === 'agent' && <AgentAlerts cfg={cfg} save={save} live={live} />}
+        {k === 'disk' && <DiskAlert cfg={cfg} save={save} />}
+      </>}
     </div>
   )
 }
 
-/** Settings shared by every item: how big, how far apart, how wide in total, and the typeface. */
+/** Settings shared by every item: one item or several, size, spacing, typeface. */
 function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCfg) => void; live: (c: MenuBarCfg) => void }) {
   return (
     <div class="mb-pane">
-      <div class="mb-pane-head"><div><h2 style={{ margin: 0 }}>General</h2><span class="hint" style={{ margin: 0 }}>For every item. Each item's own look is under its name.</span></div></div>
-      <div class="group">
-        <div class="field"><label for="mbc">Combine into one item<div class="hint" style={{ margin: 0 }}>Off: each item is its own menu-bar item and opens its own panel (Network shows network, Battery shows battery). On: one item that opens everything.</div></label>
-          <input id="mbc" type="checkbox" checked={cfg.combined} onChange={(e) => save({ ...cfg, combined: e.currentTarget.checked })} /></div>
-        <Slider id="mbs" label="Text size" min={50} max={200} step={5} value={Math.round(presetScale(cfg) * 100)} fmt={(v) => `${v}%`}
-          live={(v) => live({ ...cfg, scale: v / 100 })} save={(v) => save({ ...cfg, scale: v / 100 })} />
-        <Slider id="mbg" label="Spacing between items" min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`}
-          live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
+      <div class="mb-pane-head"><div class="mb-title"><span class="mb-title-icon"><NavIcon k="general" /></span><div><h2>General</h2><span class="hint" style={{ margin: 0 }}>For every item. Each item's own look is under its name.</span></div></div></div>
+      <Card title="Items">
+        <div class="field col"><Tiles label="Items" value={cfg.combined ? 'one' : 'separate'} onChange={(v) => save({ ...cfg, combined: v === 'one' })} options={[
+          ['separate', <span class="sep-sample"><i /><i /><i /></span>, 'Separate items · each opens its own panel'],
+          ['one', <span class="sep-sample one"><i /></span>, 'One combined item · opens everything'],
+        ]} /></div>
         {cfg.combined && <Slider id="mbw" label="Maximum width" hint="macOS hides a menu-bar item that doesn't fit, so items at the end are left out instead." min={80} max={600} step={10} value={cfg.max_width || 360} fmt={(v) => `${v} pt`}
           live={(v) => live({ ...cfg, max_width: v })} save={(v) => save({ ...cfg, max_width: v })} />}
+      </Card>
+      <Card title="Text size">
+        <div class="field"><SizeControl id="mbs" value={Math.round(presetScale(cfg) * 100)} live={(v) => live({ ...cfg, scale: v / 100 })} save={(v) => save({ ...cfg, scale: v / 100 })} /></div>
+      </Card>
+      <Card title="Typeface">
         <div class="field"><span>Weight</span><Seg label="Weight" value={cfg.weight} options={[['regular', 'Regular'], ['medium', 'Medium'], ['bold', 'Bold']] as const} onChange={(v) => save({ ...cfg, weight: v })} /></div>
         <div class="field"><label for="mbf">Font</label>
           <select id="mbf" value={cfg.font} onChange={(e) => save({ ...cfg, font: e.currentTarget.value })}>
@@ -1207,32 +1313,38 @@ function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCf
           </select></div>
         <div class="field"><label for="mbl">Labels when an item says "Default"<div class="hint" style={{ margin: 0 }}>T, CPU, MEM, arrows; spelled out with Label on top.</div></label>
           <input id="mbl" type="checkbox" checked={cfg.labels} onChange={(e) => save({ ...cfg, labels: e.currentTarget.checked })} /></div>
-      </div>
+      </Card>
+      {cfg.combined && <Card title="Spacing">
+        <Slider id="mbg" label="Between items" min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`} live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
+      </Card>}
     </div>
   )
 }
 
-function AlertsPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCfg) => void; live: (c: MenuBarCfg) => void }) {
+/** Agent notifications and sounds (inside Agent status; they work whether or not the ring is shown). */
+function AgentAlerts({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCfg) => void; live: (c: MenuBarCfg) => void }) {
   const a = cfg.alerts
   const set = (patch: Partial<MenuBarCfg['alerts']>) => save({ ...cfg, alerts: { ...a, ...patch } })
+  return <>
+    <Card title="Notifications and sounds">
+      <AlertRow title="When a task finishes" hint="Claude Code and Codex" banner={a.done_banner} soundOn={a.done_sound_on} sound={a.done_sound}
+        onBanner={(v) => set({ done_banner: v })} onSoundOn={(v) => set({ done_sound_on: v })} onSound={(v) => set({ done_sound: v })} test={() => invoke<string>('test_alert', { waiting: false }).catch((e) => `fallback:${e}`)} />
+      <AlertRow title="When an agent needs you" hint="A permission or a question" banner={a.wait_banner} soundOn={a.wait_sound_on} sound={a.wait_sound}
+        onBanner={(v) => set({ wait_banner: v })} onSoundOn={(v) => set({ wait_sound_on: v })} onSound={(v) => set({ wait_sound: v })} test={() => invoke<string>('test_alert', { waiting: true }).catch((e) => `fallback:${e}`)} />
+      <Slider id="mbmin" label="Skip short tasks" hint={'No "finished" alert for quick replies.'} min={0} max={300} step={5} value={a.min_seconds} fmt={(v) => (v ? `${v} s` : 'Off')}
+        live={(v) => live({ ...cfg, alerts: { ...a, min_seconds: v } })} save={(v) => set({ min_seconds: v })} />
+    </Card>
+    <p class="hint">These are normal Mac notifications from DeviceTally (style in System Settings → Notifications → DeviceTally). The sound plays with the notification and follows Focus; a sound alone always plays. Your own sounds: put files in ~/Library/Sounds.</p>
+  </>
+}
+
+/** Disk alert (inside Disk free). */
+function DiskAlert({ cfg, save }: { cfg: MenuBarCfg; save: (c: MenuBarCfg) => void }) {
   return (
-    <div class="mb-pane">
-      <div class="mb-pane-head"><div><h2 style={{ margin: 0 }}>Alerts</h2><span class="hint" style={{ margin: 0 }}>Know when a coding agent finishes or needs you, while you work in another window.</span></div></div>
-      <div class="group">
-        <div class="field"><span>In the menu bar<div class="hint" style={{ margin: 0 }}>Show it with the <b>Agent status</b> item (on the left): a ring, or a ring with a word.</div></span>
-          <label class="switch"><input type="checkbox" checked={cfg.items.includes('agent')} onChange={(e) => save({ ...cfg, items: e.currentTarget.checked ? ['agent', ...cfg.items.filter((x) => x !== 'agent')] : cfg.items.filter((x) => x !== 'agent') })} /> Show</label></div>
-        <AlertRow title="When a task finishes" hint="Claude Code and Codex" banner={a.done_banner} soundOn={a.done_sound_on} sound={a.done_sound}
-          onBanner={(v) => set({ done_banner: v })} onSoundOn={(v) => set({ done_sound_on: v })} onSound={(v) => set({ done_sound: v })} test={() => invoke('test_alert', { waiting: false })} />
-        <AlertRow title="When an agent needs you" hint="Claude Code asks for a permission or answer" banner={a.wait_banner} soundOn={a.wait_sound_on} sound={a.wait_sound}
-          onBanner={(v) => set({ wait_banner: v })} onSoundOn={(v) => set({ wait_sound_on: v })} onSound={(v) => set({ wait_sound: v })} test={() => invoke('test_alert', { waiting: true })} />
-        <Slider id="mbmin" label="Skip short tasks" hint={'No "finished" alert for tasks quicker than this, so quick replies don\'t ping you.'} min={0} max={300} step={5} value={a.min_seconds} fmt={(v) => (v ? `${v} s` : 'Off')}
-          live={(v) => live({ ...cfg, alerts: { ...a, min_seconds: v } })} save={(v) => set({ min_seconds: v })} />
-        <div class="field"><label for="mbdk">Disk filling up<div class="hint" style={{ margin: 0 }}>A notification at 80% and 90% full.</div></label>
-          <input id="mbdk" type="checkbox" checked={a.disk} onChange={(e) => set({ disk: e.currentTarget.checked })} /></div>
-      </div>
-      <p class="hint">Notifications are normal Mac notifications from DeviceTally (change their style in System Settings → Notifications → DeviceTally). With the notification on, its sound plays with it and follows Focus / Do Not Disturb; a sound without a notification always plays. Your own sounds: put .aiff, .wav or .m4a files in ~/Library/Sounds.</p>
-      <p class="hint">Claude Code (terminal, VS Code and other editors): working, needs you and done. Codex: done.</p>
-    </div>
+    <Card title="Alert">
+      <div class="field"><label for="mbdk">Notify when the disk is filling up<div class="hint" style={{ margin: 0 }}>At 80% and 90% full.</div></label>
+        <input id="mbdk" type="checkbox" checked={cfg.alerts.disk} onChange={(e) => save({ ...cfg, alerts: { ...cfg.alerts, disk: e.currentTarget.checked } })} /></div>
+    </Card>
   )
 }
 
@@ -1296,8 +1408,20 @@ function MenuBarTab() {
   const shown = cfg.items.map((k) => MB_ITEMS.find((x) => x[0] === k)!).filter(Boolean)
   const hidden = MB_ITEMS.filter(([k]) => !cfg.items.includes(k))
   const toggle = (k: string) => save({ ...cfg, items: cfg.items.includes(k) ? cfg.items.filter((x) => x !== k) : [...cfg.items, k] })
+  // Drag items in the list to reorder them in the menu bar.
+  const [drag, setDrag] = useState('')
+  const drop = (target: string) => {
+    if (!drag || drag === target) return
+    const items = cfg.items.filter((x) => x !== drag)
+    items.splice(items.indexOf(target), 0, drag)
+    setDrag('')
+    save({ ...cfg, items })
+  }
   const NavItem = ({ k, l, on }: { k: string; l: string; on?: boolean }) => (
-    <div class={`mb-nav-item ${sel === k ? 'active' : ''} ${on === false ? 'off' : ''}`}>
+    <div class={`mb-nav-item ${sel === k ? 'active' : ''} ${on === false ? 'off' : ''} ${drag === k ? 'dragging' : ''}`}
+      draggable={on === true} onDragStart={() => setDrag(k)} onDragEnd={() => setDrag('')}
+      onDragOver={(e) => { if (on && drag) e.preventDefault() }} onDrop={() => on && drop(k)}>
+      {on === true && <span class="grip" aria-hidden="true" title="Drag to reorder">⋮⋮</span>}
       <button class="mb-nav-btn" onClick={() => setSel(k)}><NavIcon k={k} /><span>{l}</span></button>
       {on !== undefined && <input type="checkbox" class="toggle" aria-label={`Show ${l}`} title={on ? 'Shown in the menu bar' : 'Not shown'} checked={on} onChange={() => toggle(k)} />}
     </div>
@@ -1306,17 +1430,15 @@ function MenuBarTab() {
     <div class="mb-split">
       <nav class="mb-side" aria-label="Menu bar sections">
         <NavItem k="general" l="General" />
-        <NavItem k="alerts" l="Alerts" />
-        <div class="mb-nav-h">In the menu bar</div>
+        <div class="mb-nav-h">In the menu bar <span class="mb-nav-sub">drag to reorder</span></div>
         {shown.map(([k, l]) => <NavItem key={k} k={k} l={l} on />)}
         {!shown.length && <div class="hint" style={{ margin: '2px 10px' }}>Nothing yet</div>}
         {hidden.length > 0 && <div class="mb-nav-h">More</div>}
         {hidden.map(([k, l]) => <NavItem key={k} k={k} l={l} on={false} />)}
       </nav>
       <div class="mb-main">
-        <div class="mb-top"><Preview cfg={cfg} /></div>
+        <div class="mb-top"><BarPreview cfg={cfg} sel={sel} select={setSel} /></div>
         {sel === 'general' ? <GeneralPane cfg={cfg} save={save} live={live} />
-          : sel === 'alerts' ? <AlertsPane cfg={cfg} save={save} live={live} />
           : <ItemPane k={sel} cfg={cfg} save={save} live={live} />}
       </div>
     </div>
@@ -1334,7 +1456,7 @@ function SettingsTab({ st, refresh, signIn }: { st: Status; refresh: () => void;
           <section class="section"><h2>Admin</h2>
             <div class="group"><div class="field">
               <span>Not signed in. This window shows this computer only.</span>
-              <button class="btn primary" onClick={() => setAdminSignIn(true)}>Sign in as admin…</button>
+              <button class="btn primary" onClick={() => setAdminSignIn(true)}>Sign in as admin</button>
             </div></div>
           </section>
         )}
@@ -1436,7 +1558,7 @@ function StorageTab() {
                   <b class="num storage-size">{gbText(r.bytes)}</b>
                   <span class="storage-actions">
                     <button class="btn" onClick={() => invoke('reveal_path', { path: r.path })}>Show in Finder</button>
-                    {r.trash && <button class="btn" onClick={() => setTrashing(r.path)}>Move to Bin…</button>}
+                    {r.trash && <button class="btn" onClick={() => setTrashing(r.path)}>Move to Bin</button>}
                   </span>
                 </div>
                 {trashing === r.path && <TrashConfirm item={r} cancel={() => setTrashing('')} done={() => {
@@ -1476,7 +1598,7 @@ function ServerBanner() {
         <span>{state.server ? `Your server is version ${state.server}; this app needs ${state.bundled}.` : `Your server is older than this app (${state.bundled}).`} Some screens can't load until it's updated.</span>
         {open && <UpdateServerForm close={() => setOpen(false)} done={() => setDone(true)} />}
       </div>
-      {!open && <button class="btn primary" onClick={() => setOpen(true)}>Update server…</button>}
+      {!open && <button class="btn primary" onClick={() => setOpen(true)}>Update server</button>}
     </div>
   )
 }

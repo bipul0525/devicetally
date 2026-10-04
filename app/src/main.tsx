@@ -166,7 +166,7 @@ function Popover() {
         <div class="state">
           <strong>{error === 'device_revoked' ? 'This computer was disconnected' : 'Connect this computer'}</strong>
           <span>{error === 'device_revoked' ? 'It was removed from your DeviceTally server. Connect it again to see its usage.' : 'Use a code from your DeviceTally admin (Devices, Add device).'}</span>
-          <button class="btn primary" onClick={() => invoke('open_settings')}>Connect…</button>
+          <button class="btn primary" onClick={() => invoke('open_settings')}>Connect</button>
         </div>
       </div>
     )
@@ -250,5 +250,20 @@ function Popover() {
   )
 }
 
+/** DeviceTally's own notification (macOS refuses system ones for apps without a paid signature). */
+function NoticeCard() {
+  const q = new URLSearchParams(location.search)
+  const [n, setN] = useState<{ title: string; body: string } | null>(q.get('t') ? { title: q.get('t')!, body: q.get('b') ?? '' } : null)
+  useEffect(() => { const u = listen<{ title: string; body: string }>('dt:card', (e) => setN(e.payload)); return () => { u.then((f) => f()) } }, [])
+  if (!n) return null
+  return (
+    <div class="notice" role="alert" onClick={() => invoke('card_action', { open: true })}>
+      <img src="/icon.png" alt="" />
+      <div><b>{n.title}</b><span>{n.body}</span></div>
+      <button class="notice-x" aria-label="Close" onClick={(e) => { e.stopPropagation(); invoke('card_action', { open: false }) }}>✕</button>
+    </div>
+  )
+}
+
 const view = new URLSearchParams(location.search).get('view')
-render(view === 'main' ? <MainWindow /> : <Popover />, document.getElementById('app')!)
+render(view === 'main' ? <MainWindow /> : view === 'card' ? <NoticeCard /> : <Popover />, document.getElementById('app')!)

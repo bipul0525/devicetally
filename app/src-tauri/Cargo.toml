@@ -1,6 +1,6 @@
 [package]
 name = "devicetally-app"
-version = "1.1.0"
+version = "1.2.0"
 description = "DeviceTally: AI coding tool usage in your menu bar"
 edition = "2021"
 license = "MIT"
@@ -35,9 +35,11 @@ notify-rust = "4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSPanel", "NSResponder", "NSGraphics", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSFontDescriptor", "NSFont", "NSColor", "NSStringDrawing", "NSAttributedString"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSGeometry", "NSDictionary", "NSAttributedString", "NSUserNotification", "NSFileManager", "NSURL", "NSError", "NSBundle"] }
+objc2-user-notifications = { version = "0.3", features = ["UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNNotification", "block2"] }
 
 [profile.release]
 codegen-units = 1

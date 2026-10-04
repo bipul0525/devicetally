@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0
+
+- **Menu bar settings redesigned:** a live, clickable preview of your menu bar (light or dark), item tiles, one-click size presets, drag to reorder, and each item's options grouped in cards.
+- **Any size from 50% to 200%,** for all items or one; large sizes use the menu bar's full height and the agent ring grows with them.
+- **Agent alerts live in Agent status;** the separate Alerts page is gone.
+- **"Send a test" always shows something:** macOS blocks system notifications for apps without a paid Apple signature, so DeviceTally shows its own notification in the top-right corner (click it to open DeviceTally).
+- Cleaner Safe / Caution / Risky tags in Storage, a softer selected row in the sidebar, button labels without "…", and a larger Settings button.
+- Lock this computer leaves Claude Code's transcript cleanup as it is.
+
 ## 1.1.0
 
 - **A menu-bar item per module, like Stats:** Agent status, Network, CPU, Memory, Disk, Battery and Clock are separate items, and each opens its own panel over any app: Network shows speeds with live graphs and your connection; CPU shows usage, temperature and top processes; Memory, Disk (with "What's using space?"), Battery (health, cycles, time left), Clock (calendar) and Agents. **Combine into one item** (Menu bar → General) brings back a single item with everything.

@@ -55,6 +55,7 @@ struct AppState {
     // While an agent is working the menu bar redraws 4 times a second (the ring turns); system
     // counters are still read at most every 2 s.
     animating: std::sync::atomic::AtomicBool,
+    card_id: std::sync::atomic::AtomicI64,
     last_sample: Mutex<Option<std::time::Instant>>,
     // Separate menu-bar items (one per module, macOS): which exist, in order, and their last images.
     tray_items: Mutex<Vec<String>>,
@@ -210,14 +211,7 @@ fn give_alert(app: &AppHandle, cfg: &menubar::Alerts, a: &activity::Alert) {
 /// elsewhere the notification plugin.
 fn notify_user(app: &AppHandle, title: &str, body: &str, sound: Option<&str>) {
     #[cfg(target_os = "macos")]
-    {
-        let (t, b, s) = (title.to_string(), body.to_string(), sound.map(String::from));
-        let _ = app.run_on_main_thread(move || {
-            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-                notify::show(mtm, &t, &b, s.as_deref());
-            }
-        });
-    }
+    notify_mac(app, title, body, sound, |_| {});
     #[cfg(not(target_os = "macos"))]
     {
         use tauri_plugin_notification::NotificationExt;
@@ -292,17 +286,37 @@ async fn reveal_path(path: String) -> Result<(), String> {
     r.map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Opens System Settings → Notifications (macOS), to allow DeviceTally's banners.
+#[tauri::command]
+fn open_notification_settings() {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension").spawn();
+}
+
 /// Settings → Agent status: try the current alerts.
 #[tauri::command]
-async fn test_alert(app: AppHandle, state: State<'_, AppState>, waiting: bool) -> Result<(), String> {
+async fn test_alert(app: AppHandle, state: State<'_, AppState>, waiting: bool) -> Result<String, String> {
     let cfg = state.config.lock().unwrap().menubar.alerts.clone();
     let a = if waiting {
         activity::Alert { waiting: true, title: "Claude Code needs you".into(), body: "devicetally · a permission or a question (test)".into() }
     } else {
         activity::Alert { waiting: false, title: "Claude Code finished".into(), body: "devicetally · took 3 min (test)".into() }
     };
+    // With a notification: send it and say how it was shown (macOS's own, or DeviceTally's card).
+    let banner = if waiting { cfg.wait_banner } else { cfg.done_banner };
+    #[cfg(target_os = "macos")]
+    if banner {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = Mutex::new(Some(tx));
+        notify_mac(&app, &a.title, &a.body, cfg.sound(waiting), move |r| {
+            if let Some(tx) = tx.lock().unwrap().take() {
+                let _ = tx.send(r);
+            }
+        });
+        return Ok(rx.await.unwrap_or("card").into());
+    }
     give_alert(&app, &cfg, &a);
-    Ok(())
+    Ok("shown".into())
 }
 
 /// Folders macOS looks in for alert sounds, the user's own first (same order as notifications use).
@@ -337,6 +351,89 @@ async fn preview_sound(name: String) -> Result<(), String> {
         play_sound(&name);
     }
     Ok(())
+}
+
+/// macOS: Apple's notification system when macOS allows it (a Developer ID–signed build); otherwise
+/// DeviceTally's own notification card. `result` gets "system" or "card".
+#[cfg(target_os = "macos")]
+fn notify_mac(app: &AppHandle, title: &str, body: &str, sound: Option<&str>, result: impl Fn(&'static str) + Send + Sync + 'static) {
+    let (t, b, s) = (title.to_string(), body.to_string(), sound.map(String::from));
+    let app2 = app.clone();
+    notify::send(title, body, sound, move |r| {
+        if r.is_ok() {
+            return result("system");
+        }
+        // macOS refuses notifications from apps without a paid signature: show our own card.
+        show_card(&app2, &t, &b);
+        if let Some(s) = &s {
+            play_sound(s);
+        }
+        result("card");
+    });
+}
+
+/// DeviceTally's own notification: a small card at the top right, over any app (even full screen),
+/// gone after 6 s; a click opens DeviceTally.
+fn show_card(app: &AppHandle, title: &str, body: &str) {
+    let pct = |s: &str| s.bytes().map(|c| if c.is_ascii_alphanumeric() { (c as char).to_string() } else { format!("%{c:02X}") }).collect::<String>();
+    let (title, body) = (title.to_string(), body.to_string());
+    let payload = serde_json::json!({ "title": &title, "body": &body, "id": now_ms() });
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let w = match app2.get_webview_window("card") {
+            Some(w) => w,
+            None => {
+                let Ok(w) = WebviewWindowBuilder::new(&app2, "card", WebviewUrl::App(format!("index.html?view=card&t={}&b={}", pct(&title), pct(&body)).into()))
+                    .title("DeviceTally")
+                    .inner_size(356.0, 76.0)
+                    .decorations(false)
+                    .transparent(true)
+                    .resizable(false)
+                    .always_on_top(true)
+                    .skip_taskbar(true)
+                    .focused(false)
+                    .visible(false)
+                    .shadow(true)
+                    .build()
+                else {
+                    return;
+                };
+                #[cfg(target_os = "macos")]
+                on_every_desktop(&w);
+                w
+            }
+        };
+        // Top right, just under the menu bar, like a Mac notification.
+        if let Ok(Some(m)) = w.current_monitor() {
+            let sf = m.scale_factor();
+            let size = m.size().to_logical::<f64>(sf);
+            let _ = w.set_position(tauri::LogicalPosition::new(size.width - 356.0 - 12.0, 36.0));
+        }
+        let _ = w.emit("dt:card", payload.clone());
+        let _ = w.show();
+        let id = payload["id"].as_i64().unwrap_or(0);
+        let w2 = w.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            // Hide unless a newer card replaced it.
+            let latest = w2.app_handle().state::<AppState>().card_id.load(std::sync::atomic::Ordering::Relaxed);
+            if latest == id {
+                let _ = w2.hide();
+            }
+        });
+        app2.state::<AppState>().card_id.store(id, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+/// The card's click and close.
+#[tauri::command]
+fn card_action(app: AppHandle, open: bool) {
+    if let Some(w) = app.get_webview_window("card") {
+        let _ = w.hide();
+    }
+    if open {
+        let _ = show_main(&app, "overview");
+    }
 }
 
 /// An alert sound by name (macOS), from the user's or the system's sound folders, without blocking.
@@ -1269,6 +1366,17 @@ fn float_everywhere(w: &tauri::WebviewWindow) {
     win.setHidesOnDeactivate(false);
 }
 
+/// Above other windows on every desktop, without taking focus (the notification card).
+#[cfg(target_os = "macos")]
+fn on_every_desktop(w: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSPopUpMenuWindowLevel, NSWindow, NSWindowCollectionBehavior};
+    let Ok(ptr) = w.ns_window() else { return };
+    // SAFETY: Tauri returns the live NSWindow for this webview window, on the main thread.
+    let win = unsafe { &*(ptr as *const NSWindow) };
+    win.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary | NSWindowCollectionBehavior::Stationary | NSWindowCollectionBehavior::IgnoresCycle);
+    win.setLevel(NSPopUpMenuWindowLevel);
+}
+
 /// Keeps one menu-bar item per module in `want`, in order (macOS adds new items to the left, so
 /// they're created right to left). Recreated only when the list changes.
 fn sync_trays(app: &AppHandle, want: &[String]) {
@@ -1403,7 +1511,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
-        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_menubar_live, menubar_preview, system_stats, stats_history, current_panel, top_processes, open_tab, activity, test_alert, preview_sound, list_sounds, storage_scan, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
+        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_menubar_live, menubar_preview, system_stats, stats_history, current_panel, top_processes, open_tab, activity, test_alert, open_notification_settings, card_action, preview_sound, list_sounds, storage_scan, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
         .setup(|app| {
             // A menu-bar utility: no Dock icon, no app switcher entry.
             #[cfg(target_os = "macos")]
@@ -1424,6 +1532,7 @@ pub fn run() {
                 seen_sessions: Mutex::new(None),
                 disk_alerted: Mutex::new(0),
                 animating: std::sync::atomic::AtomicBool::new(false),
+                card_id: std::sync::atomic::AtomicI64::new(0),
                 last_sample: Mutex::new(None),
                 tray_items: Mutex::new(vec![]),
                 item_icons: Mutex::new(Default::default()),
@@ -1457,6 +1566,10 @@ pub fn run() {
                 .on_menu_event(on_tray_menu)
                 .build(app)?;
 
+            #[cfg(target_os = "macos")]
+            if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+                notify::setup(mtm);
+            }
             // The popover closes when it loses focus, like a system popover.
             if let Some(w) = app.get_webview_window("popover") {
                 #[cfg(target_os = "macos")]
@@ -1476,7 +1589,8 @@ pub fn run() {
 
             // Support check: DEVICETALLY_NOTIFY_SELFTEST=1 sends one test notification at start.
             if std::env::var("DEVICETALLY_NOTIFY_SELFTEST").is_ok() {
-                notify_user(&handle, "DeviceTally test", "Notifications work (self-test)", Some("Glass"));
+                #[cfg(target_os = "macos")]
+                notify_mac(&handle, "DeviceTally test", "Notifications work (self-test)", Some("Glass"), |r| eprintln!("selftest notification: {r}"));
             }
             // Today's tokens every 5 minutes; the menu-bar item (network, CPU, clock…) every 2 seconds.
             let h2 = handle.clone();
