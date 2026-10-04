@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.1
+
+- 1.4.0 for Windows and Linux (1.4.0 didn't build there).
+
 ## 1.4.0
 
 - **Separate menu-bar items sit tight:** each is as wide as what it shows (with digits as 8, so it doesn't jump), and Spacing at 0 really means almost touching. Before, each item kept room for its widest possible value plus fixed margins.

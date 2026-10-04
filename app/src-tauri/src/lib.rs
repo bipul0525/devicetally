@@ -579,13 +579,14 @@ async fn unlock_computer(app: AppHandle, state: State<'_, AppState>) -> Result<(
     }
 }
 
-/// macOS dark mode, checked at most every 10 s (only needed for coloured menu-bar items).
-#[cfg(target_os = "macos")]
 /// The menu bar's own appearance, read from a menu-bar item (it follows the wallpaper, not only the
 /// system's dark mode): 0 unknown, 1 light, 2 dark.
+#[cfg(target_os = "macos")]
 static BAR_LOOK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-/// Whether text without its own colour should be white in a coloured menu-bar image.
+/// Whether text without its own colour should be white in a coloured menu-bar image: the menu
+/// bar's look, else macOS dark mode (checked at most every 10 s).
+#[cfg(target_os = "macos")]
 fn dark_mode() -> bool {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     match BAR_LOOK.load(Ordering::Relaxed) {
@@ -950,7 +951,10 @@ async fn activity() -> Result<Vec<activity::Session>, String> {
 /// Whether the menu bar looks dark right now (for the preview in Settings).
 #[tauri::command]
 async fn menubar_dark() -> Result<bool, String> {
-    Ok(dark_mode())
+    #[cfg(target_os = "macos")]
+    return Ok(dark_mode());
+    #[cfg(not(target_os = "macos"))]
+    Ok(false)
 }
 
 /// Finished agent tasks, newest first, for the Agents panel.
