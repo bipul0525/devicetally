@@ -5,6 +5,7 @@
 mod activity;
 mod lock;
 mod menubar;
+mod net;
 #[cfg(target_os = "macos")]
 mod notify;
 mod storage;
@@ -29,6 +30,9 @@ struct Config {
     server: String,
     #[serde(default)]
     menubar: menubar::MenuBar,
+    /// A Dock icon too (macOS); off by default: opened from the menu bar.
+    #[serde(default)]
+    show_in_dock: bool,
 }
 
 struct AppState {
@@ -58,6 +62,17 @@ struct AppState {
     last_sample: Mutex<Option<std::time::Instant>>,
     // Separate menu-bar items (one per module, macOS): which exist, in order, and their last images.
     tray_items: Mutex<Vec<String>>,
+    // Finished agent tasks, newest first (last 100), kept in ~/.devicetally.
+    agent_log: Mutex<Vec<activity::Finished>>,
+    // Battery: charging at the last redraw, and when it last changed (for the charger animation).
+    battery_change: Mutex<(Option<bool>, Option<std::time::Instant>)>,
+    battery_moving: std::sync::atomic::AtomicBool,
+    // Network panel: connectivity checks, apps using the network, totals reset point, public address.
+    connectivity: Mutex<net::Connectivity>,
+    net_apps: Mutex<net::Apps>,
+    net_base: Mutex<(u64, u64)>,
+    public_ip: Mutex<Option<(std::time::Instant, Value)>>,
+    net_wanted: Mutex<Option<std::time::Instant>>,
     item_icons: Mutex<std::collections::HashMap<String, (Vec<u8>, bool)>>, // image, template
     // Which panel the popover shows ("all" for the combined item).
     panel: Mutex<String>,
@@ -240,10 +255,21 @@ fn disk_check(app: &AppHandle) {
 
 /// Storage on this computer (read-only), for the Storage tab.
 #[tauri::command]
-async fn storage_scan(personal: Option<bool>) -> Result<Vec<storage::Item>, String> {
+async fn storage_scan() -> Result<Value, String> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let personal = personal.unwrap_or(false);
-    tokio::task::spawn_blocking(move || storage::scan(&home, personal)).await.map_err(|e| e.to_string())
+    tokio::task::spawn_blocking(move || {
+        let full = storage::full_access(&home);
+        serde_json::json!({ "full_access": full, "items": storage::scan(&home, full) })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Opens Privacy & Security → Full Disk Access, where DeviceTally can be turned on once.
+#[tauri::command]
+async fn open_full_disk_access(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles", None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Moves a cache folder to the Bin (recoverable until the Bin is emptied). Only what
@@ -578,7 +604,7 @@ fn draw_menubar(app: &AppHandle) {
     let agent = activity::agent(&sessions, now_ms(), *state.activity_seen.lock().unwrap());
     state.animating.store(agent.0 == menubar::Agent::Working && cfg.items.iter().any(|i| i == "agent"), std::sync::atomic::Ordering::Relaxed);
     let fresh = state.last_sample.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_millis(1800));
-    let values = menubar::Values {
+    let mut values = menubar::Values {
         agent,
         tick: ((now_ms() as u64 / menubar::RING_MS) % menubar::RING_STEPS as u64) as u8,
         tokens: state.tokens_today.lock().unwrap().clone(),
@@ -598,7 +624,26 @@ fn draw_menubar(app: &AppHandle) {
             Default::default()
         },
         now: chrono::Local::now().naive_local(),
+        battery_anim: 0,
     };
+    // Charger plugged in or unplugged: a short animation on the battery-in-icon item.
+    if values.stats.battery.is_some() {
+        let mut b = state.battery_change.lock().unwrap();
+        if b.0.is_some_and(|was| was != values.stats.charging) {
+            b.1 = Some(std::time::Instant::now());
+        }
+        b.0 = Some(values.stats.charging);
+        let step = b.1.map(|t| (t.elapsed().as_millis() as u64 / menubar::RING_MS) as u8 + 1).filter(|s| *s <= menubar::BATTERY_STEPS);
+        values.battery_anim = step.unwrap_or(0);
+        if step.is_none() {
+            b.1 = None;
+        }
+    }
+    let battery_moving = values.battery_anim > 0 && cfg.items.iter().any(|i| i == "battery");
+    state.battery_moving.store(battery_moving, std::sync::atomic::Ordering::Relaxed);
+    if battery_moving {
+        state.animating.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut units = menubar::units(&cfg, &values);
     // Claude Code status dot, first in the item: orange working, red needs you, green done.
     // The older "status dot" setting, until it's replaced by the Agent status item.
@@ -607,7 +652,16 @@ fn draw_menubar(app: &AppHandle) {
     let fired = {
         let mut seen = state.seen_sessions.lock().unwrap();
         let first = seen.is_none();
-        activity::alerts(seen.get_or_insert_with(Default::default), first, &sessions, now_ms(), cfg.alerts.min_seconds as i64 * 1000)
+        {
+            let mut log = state.agent_log.lock().unwrap();
+            let before = log.len();
+            let a = activity::alerts(seen.get_or_insert_with(Default::default), first, &sessions, now_ms(), cfg.alerts.min_seconds as i64 * 1000, &mut log);
+            if log.len() != before {
+                log.truncate(100);
+                let _ = std::fs::write(agent_dir().join("app-agent-history.json"), serde_json::to_vec(&*log).unwrap_or_default());
+            }
+            a
+        }
     };
     for a in fired {
         give_alert(app, &cfg.alerts, &a);
@@ -652,7 +706,7 @@ fn draw_menubar(app: &AppHandle) {
 fn draw_ring(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
     let cfg = state.config.lock().unwrap().menubar.clone();
-    if !cfg!(target_os = "macos") || cfg.combined || !cfg.items.iter().any(|i| i == "agent") {
+    if !cfg!(target_os = "macos") || cfg.combined || !cfg.items.iter().any(|i| i == "agent") || state.battery_moving.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
     let sessions = activity::read(&agent_dir().join("activity"));
@@ -662,7 +716,7 @@ fn draw_ring(app: &AppHandle) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        let values = menubar::Values { agent, tick: ((now_ms() as u64 / menubar::RING_MS) % menubar::RING_STEPS as u64) as u8, tokens: None, stats: Default::default(), now: chrono::Local::now().naive_local() };
+        let values = menubar::Values { agent, tick: ((now_ms() as u64 / menubar::RING_MS) % menubar::RING_STEPS as u64) as u8, tokens: None, stats: Default::default(), now: chrono::Local::now().naive_local(), battery_anim: 0 };
         let one = menubar::MenuBar { items: vec!["agent".into()], solo: true, ..cfg.clone() };
         let u = menubar::units(&one, &values);
         let colored = one.colored() || u.iter().any(|x| x.color.is_some());
@@ -712,7 +766,7 @@ fn apply_menubar(app: &AppHandle, want: &[String], drawn: Vec<(String, Option<Dr
                         let _ = t.set_icon_as_template(!d.colored);
                         let _ = t.set_title(None::<&str>);
                     }
-                    fit_height(&t, d.w, d.h);
+                    fit_height(&t, d.w, d.h, separate);
                     icons.insert(item, (d.rgba, !d.colored));
                 }
             }
@@ -733,7 +787,9 @@ fn apply_menubar(app: &AppHandle, want: &[String], drawn: Vec<(String, Option<Dr
 
 /// The tray library always shows images 18 pt high, so a 44 px (22 pt, full menu-bar height) image
 /// was squeezed, shrinking everything in it. Show it at its real size: 2 px per point.
-fn fit_height(t: &tauri::tray::TrayIcon, w: u32, h: u32) {
+/// Separate items are also made exactly as wide as their image: macOS otherwise adds its own
+/// padding around each one, so the Spacing setting couldn't bring them close together.
+fn fit_height(t: &tauri::tray::TrayIcon, w: u32, h: u32, exact: bool) {
     #[cfg(target_os = "macos")]
     let _ = t.with_inner_tray_icon(move |inner| {
         let Some(item) = inner.ns_status_item() else { return };
@@ -742,12 +798,39 @@ fn fit_height(t: &tauri::tray::TrayIcon, w: u32, h: u32) {
         if let Some(img) = item.button(mtm).and_then(|b| b.image()) {
             img.setSize(objc2_foundation::NSSize::new(w as f64 / 2.0, h as f64 / 2.0));
         }
+        item.setLength(if exact { w as f64 / 2.0 } else { objc2_app_kit::NSVariableStatusItemLength });
     });
     #[cfg(not(target_os = "macos"))]
-    let _ = (t, w, h);
+    let _ = (t, w, h, exact);
 }
 
 // Menu-bar commands are async so Tauri runs them off the main (window) thread.
+/// Shows or hides DeviceTally's Dock icon, and remembers it.
+#[tauri::command]
+async fn set_dock(app: AppHandle, state: State<'_, AppState>, show: bool) -> Result<(), String> {
+    let mut c = state.config.lock().unwrap().clone();
+    c.show_in_dock = show;
+    save_config(&app, &c)?;
+    *state.config.lock().unwrap() = c;
+    #[cfg(target_os = "macos")]
+    {
+        let a = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let _ = a.set_activation_policy(if show { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory });
+            // Hiding the Dock icon deactivates the app; keep its window in front.
+            if let Some(w) = a.get_webview_window("main") {
+                let _ = w.set_focus();
+            }
+        });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_dock(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.config.lock().unwrap().show_in_dock)
+}
+
 #[tauri::command]
 async fn get_menubar(state: State<'_, AppState>) -> Result<menubar::MenuBar, String> {
     Ok(state.config.lock().unwrap().menubar.clone())
@@ -792,6 +875,7 @@ async fn menubar_preview(state: State<'_, AppState>, mut cfg: menubar::MenuBar) 
         tokens: state.tokens_today.lock().unwrap().clone().or(Some("151M".into())),
         stats,
         now: chrono::Local::now().naive_local(),
+        battery_anim: 0,
     };
     let units = menubar::units(&cfg, &values);
     // As it looks on a light and on a dark menu bar.
@@ -846,6 +930,12 @@ async fn activity() -> Result<Vec<activity::Session>, String> {
     let mut s = activity::read(&agent_dir().join("activity"));
     s.sort_by(|a, b| b.since.cmp(&a.since));
     Ok(s)
+}
+
+/// Finished agent tasks, newest first, for the Agents panel.
+#[tauri::command]
+async fn agent_history(state: State<'_, AppState>) -> Result<Vec<activity::Finished>, String> {
+    Ok(state.agent_log.lock().unwrap().clone())
 }
 
 fn read_agent() -> Option<(String, String)> {
@@ -1411,8 +1501,8 @@ fn show_main(app: &AppHandle, tab: &str) -> tauri::Result<()> {
     }
     let w = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(format!("index.html?view=main&tab={tab}").into()))
         .title("DeviceTally")
-        .inner_size(720.0, 560.0)
-        .min_inner_size(600.0, 460.0)
+        .inner_size(900.0, 640.0)
+        .min_inner_size(640.0, 480.0)
         .center()
         .build()?;
     #[cfg(target_os = "macos")]
@@ -1569,6 +1659,51 @@ async fn top_processes(state: State<'_, AppState>, by: String) -> Result<Vec<sta
     Ok(state.sampler.lock().unwrap().top(&by, 5))
 }
 
+/// Network panel details: connectivity checks (ms, null = failed), latency, jitter, DNS, MAC and
+/// the totals since the last reset.
+#[tauri::command]
+async fn net_details(state: State<'_, AppState>) -> Result<Value, String> {
+    *state.net_wanted.lock().unwrap() = Some(std::time::Instant::now());
+    let s = state.last_stats.lock().unwrap().clone();
+    let base = *state.net_base.lock().unwrap();
+    let (latency, jitter) = state.connectivity.lock().unwrap().latency();
+    let checks: Vec<Option<f32>> = state.connectivity.lock().unwrap().checks.iter().copied().collect();
+    let mac = sysinfo::Networks::new_with_refreshed_list().iter().find(|(n, _)| **n == s.net_iface).map(|(_, d)| d.mac_address().to_string()).unwrap_or_default();
+    Ok(serde_json::json!({
+        "checks": checks, "latency": latency, "jitter": jitter, "dns": net::dns(), "mac": mac,
+        "total_down": s.net_total_down.saturating_sub(base.0), "total_up": s.net_total_up.saturating_sub(base.1), "reset": base != (0, 0),
+    }))
+}
+
+/// Starts the network totals from zero now.
+#[tauri::command]
+async fn reset_net_totals(state: State<'_, AppState>) -> Result<(), String> {
+    let s = state.last_stats.lock().unwrap().clone();
+    *state.net_base.lock().unwrap() = (s.net_total_down, s.net_total_up);
+    Ok(())
+}
+
+/// Apps using the network now (macOS), busiest first.
+#[tauri::command]
+async fn net_processes(app: AppHandle) -> Result<Vec<net::NetProc>, String> {
+    tokio::task::spawn_blocking(move || app.state::<AppState>().net_apps.lock().unwrap().top(6)).await.map_err(|e| e.to_string())
+}
+
+/// This connection's public address, country and provider (ipinfo.io), asked only while the
+/// Network panel is open, at most every 30 minutes unless refreshed.
+#[tauri::command]
+async fn public_ip(state: State<'_, AppState>, refresh: bool) -> Result<Value, String> {
+    if let Some((t, v)) = state.public_ip.lock().unwrap().clone() {
+        if !refresh && t.elapsed() < Duration::from_secs(1800) {
+            return Ok(v);
+        }
+    }
+    let v: Value = state.http.get("https://ipinfo.io/json").send().await.map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
+    let v = serde_json::json!({ "ip": v["ip"], "country": v["country"], "city": v["city"], "org": v["org"] });
+    *state.public_ip.lock().unwrap() = Some((std::time::Instant::now(), v.clone()));
+    Ok(v)
+}
+
 /// Recent readings for a panel's graph.
 #[tauri::command]
 async fn stats_history(state: State<'_, AppState>) -> Result<Vec<stats::Point>, String> {
@@ -1585,7 +1720,9 @@ async fn current_panel(state: State<'_, AppState>) -> Result<String, String> {
 fn panel_height(panel: &str) -> f64 {
     match panel {
         "all" | "tokens" => 600.0,
-        "agent" | "clock" => 380.0,
+        "agent" => 540.0,
+        "net" => 640.0,
+        "clock" => 380.0,
         "disk" => 340.0,
         _ => 460.0,
     }
@@ -1618,14 +1755,13 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
-        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_menubar_live, menubar_preview, system_stats, stats_history, current_panel, top_processes, open_tab, activity, test_alert, open_notification_settings, card_action, preview_sound, list_sounds, storage_scan, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
+        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_dock, get_dock, set_menubar_live, menubar_preview, system_stats, stats_history, current_panel, top_processes, net_details, reset_net_totals, net_processes, public_ip, open_tab, activity, agent_history, test_alert, open_notification_settings, card_action, preview_sound, list_sounds, storage_scan, open_full_disk_access, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
         .setup(|app| {
-            // A menu-bar utility: no Dock icon, no app switcher entry.
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
             let handle = app.handle().clone();
             let cfg = load_config(&handle);
+            // A menu-bar utility: no Dock icon or app switcher entry, unless asked for.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(if cfg.show_in_dock { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory });
             app.manage(AppState {
                 config: Mutex::new(cfg.clone()),
                 http: reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?,
@@ -1641,6 +1777,14 @@ pub fn run() {
                 card_id: std::sync::atomic::AtomicI64::new(0),
                 last_sample: Mutex::new(None),
                 tray_items: Mutex::new(vec![]),
+                agent_log: Mutex::new(std::fs::read(agent_dir().join("app-agent-history.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()),
+                battery_change: Mutex::new((None, None)),
+                battery_moving: Default::default(),
+                connectivity: Mutex::new(Default::default()),
+                net_apps: Mutex::new(Default::default()),
+                net_base: Mutex::new((0, 0)),
+                public_ip: Mutex::new(None),
+                net_wanted: Mutex::new(None),
                 item_icons: Mutex::new(Default::default()),
                 panel: Mutex::new("all".into()),
                 history: Mutex::new(Default::default()),
@@ -1717,6 +1861,21 @@ pub fn run() {
                 });
             }
             std::thread::spawn(update_tracker);
+            // Connectivity checks every 2 s while a Network item is in the menu bar or its panel was
+            // looked at in the last 15 s (one small connection to 1.1.1.1, like Stats).
+            let h4 = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let st = h4.state::<AppState>();
+                    let shown = st.config.lock().unwrap().menubar.items.iter().any(|i| i == "net");
+                    let looked = st.net_wanted.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(15));
+                    if shown || looked {
+                        let r = tokio::task::spawn_blocking(net::probe).await.ok().flatten();
+                        st.connectivity.lock().unwrap().push(r);
+                    }
+                }
+            });
             // Today's tokens every 5 minutes; the menu-bar item (network, CPU, clock…) every 2 seconds.
             let h2 = handle.clone();
             tauri::async_runtime::spawn(async move {
@@ -1741,8 +1900,17 @@ pub fn run() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running DeviceTally");
+        .build(tauri::generate_context!())
+        .expect("error while running DeviceTally")
+        .run(|app, e| {
+            // Clicking DeviceTally in the Dock (or opening it again from Finder) opens its window.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = e {
+                let _ = show_main(app, "overview");
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, e);
+        });
 }
 
 #[cfg(test)]

@@ -218,7 +218,7 @@ function OverviewTab({ admin }: { admin: boolean }) {
       {admin && <DevicesAtGlance selected={device} select={setDevice} />}
       <div class="toolbar">
         <Seg label="Range" value={range} options={RANGES} onChange={setRange} />
-        {admin && q.data && q.data.labels.tools_seen.length > 0 && (
+        {q.data && q.data.labels.tools_seen.length > 0 && (
           <select aria-label="Tool" value={tool} onChange={(e) => setTool(e.currentTarget.value)}>
             <option value="">All tools</option>
             {['claude', ...q.data.labels.tools_seen].map((t) => <option key={t} value={t}>{q.data!.labels.tools[t] ?? t}</option>)}
@@ -240,20 +240,20 @@ function OverviewTab({ admin }: { admin: boolean }) {
               <div class="focal">
                 <div class="big num">{fmt(t.tokens)} <span style={{ fontSize: 13, fontWeight: 400 }}>tokens</span></div>
                 <div class="sub num">
-                  {admin && <span title="What this usage would cost at API prices. Subscriptions are a flat fee.">{usd(t.cost)} API-equivalent</span>}
+                  {<span title="What this usage would cost at API prices. Subscriptions are a flat fee.">{usd(t.cost)} API-equivalent</span>}
                   {change !== null && <span class="trend">{change >= 0 ? '+' : ''}{change}% vs previous {RANGES.find((r) => r[0] === range)![1]}</span>}
                 </div>
               </div>
               <div class="stats num">
                 <span><b>{fmt(t.sessions)}</b> sessions</span>
                 <span><b>{dur(t.active_seconds)}</b> active</span>
-                {admin && <span><b>{fmt(t.turns)}</b> replies</span>}
+                <span><b>{fmt(t.turns)}</b> replies</span>
               </div>
               <DailyChart days={d.daily} series={series} />
               <div class="cols">
-                {admin && <section class="section"><h2>By tool</h2>
+                {<section class="section"><h2>By tool</h2>
                   <Bars items={d.by.tool.map((x) => ({ key: x.key, label: <><Mark of={x.key} />{d.labels.tools[x.key] ?? x.key}</>, value: x.tokens, text: fmt(x.tokens) }))} /></section>}
-                {admin && <section class="section"><h2>By model</h2>
+                {<section class="section"><h2>By model</h2>
                   <Bars items={d.by.model.slice(0, 6).map((x) => ({ key: x.key, label: <span title={x.key}><Mark of={x.key} />{modelName(x.key)}</span>, value: x.tokens, text: fmt(x.tokens) }))} /></section>}
                 {admin && d.labels.devices.length > 1 && (
                   <section class="section"><h2>By device</h2>
@@ -1003,10 +1003,11 @@ function ServerGroup() {
 
 // ---------- Menu bar (every computer: it's this computer's menu bar) ----------
 type ItemStyle = { label: '' | 'text' | 'icon' | 'inside' | 'none'; color: string; label_color: string; scale: number; layout: '' | 'row' | 'stacked' | 'top' }
-type ClockCfg = { hour12: boolean; ampm: boolean; weekday: boolean; day: boolean; month: boolean }
+const CLOCK_SPACING = ['tight', 'thin', '', 'wide']
+type ClockCfg = { hour12: boolean; ampm: boolean; weekday: boolean; day: boolean; month: boolean; spacing: string }
 type MenuBarCfg = { items: string[]; layout: 'row' | 'stacked' | 'top'; size: string; spacing: string; labels: boolean; net_stack: boolean; scale: number; gap: number
   gap_pt: number | null; weight: 'regular' | 'medium' | 'bold'; font: string; label_color: string; value_color: string
-  styles: Record<string, ItemStyle>; clock: ClockCfg; max_width: number; status_dot: boolean; combined: boolean; ring_color: boolean
+  styles: Record<string, ItemStyle>; clock: ClockCfg; max_width: number; status_dot: boolean; combined: boolean; ring_color: boolean; agent_motion: string; agent_done: string
   alerts: { done_banner: boolean; done_sound: string; done_sound_on: boolean; wait_banner: boolean; wait_sound: string; wait_sound_on: boolean; min_seconds: number; disk_alert: boolean } }
 /** One alert event: notification on/off, sound on/off, which sound (▶ to hear it), and a test. */
 function AlertRow({ title, hint, banner, soundOn, sound, onBanner, onSoundOn, onSound, test }: {
@@ -1236,7 +1237,7 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
   const labelTiles: [ItemStyle['label'], ComponentChildren, string][] = k === 'agent'
     ? [['', <Ring />, 'Ring'], ['text', <Ring word />, 'Ring + word']]
     : k === 'clock'
-      ? [['', <span>{val}</span>, 'Time only'], ['icon', <><SampleIcon k="clock" /> {val}</>, 'With icon']]
+      ? [['', <span>{val}</span>, 'Digital'], ['icon', <SampleIcon k="clock" />, 'Analog']]
       : k === 'net'
         ? [['', <span>{cfg.labels ? '↑ ' : ''}{val}</span>, 'Default'], ['text', <span>↑ {val}</span>, 'Arrows'], ['none', <span>{val}</span>, 'None']]
         : [['', <span>{cfg.labels ? <small>{lab} </small> : null}{val}</span>, 'Default'], ['text', <span><small>{lab} </small>{val}</span>, 'Text'], ['icon', <><SampleIcon k={k} /> {val}</>, 'Icon'],
@@ -1260,6 +1261,12 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
           {k === 'net' && <div class="field"><label for="mbn">Upload over download<div class="hint" style={{ margin: 0 }}>One narrow column instead of two side by side.</div></label>
             <input id="mbn" type="checkbox" checked={cfg.net_stack} onChange={(e) => save({ ...cfg, net_stack: e.currentTarget.checked })} /></div>}
         </Card>
+        {k === 'agent' && <Card title="Look">
+          <div class="field col"><span class="field-label">While working</span><Tiles label="While working" value={cfg.agent_motion || 'ring'} onChange={(v) => save({ ...cfg, agent_motion: v })} options={[
+            ['ring', <span class="look-demo look-ring" />, 'Ring'], ['pulse', <span class="look-demo look-pulse" />, 'Pulse'], ['dots', <span class="look-demo look-dots"><i /><i /><i /></span>, 'Dots']]} /></div>
+          <div class="field col"><span class="field-label">When done</span><Tiles label="When done" value={cfg.agent_done || 'badge'} onChange={(v) => save({ ...cfg, agent_done: v })} options={[
+            ['badge', <span class="look-done">✓</span>, 'Badge'], ['seal', <span class="look-done seal">✓</span>, 'Seal'], ['check', <span class="look-done plain">✓</span>, 'Check']]} /></div>
+        </Card>}
         <Card title="Size">
           <div class="field"><SizeControl id={`sz-${k}`} value={Math.round((st.scale || 1) * 100)} live={(v) => live(with_({ scale: v / 100 }))} save={(v) => save(with_({ scale: v / 100 }))} /></div>
         </Card>
@@ -1269,12 +1276,15 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
           {(k !== 'agent' || st.label === 'text' || st.label === 'icon') && <div class="field"><span>{k === 'agent' ? 'Word' : insideBattery ? 'Battery' : 'Number'}</span><ColorPick label="Number colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
           {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field"><span>{k === 'clock' ? 'Icon' : 'Label'}</span><ColorPick label="Label colour" value={st.label_color} onChange={(v) => save(with_({ label_color: v }))} /></div>}
         </Card>
-        {k === 'clock' && <Card title="Format">
+        {k === 'clock' && st.label !== 'icon' && <Card title="Format">
           <div class="field"><span>Hours</span><Seg label="Hours" value={c.hour12 ? '12' : '24'} options={[['24', '24-hour'], ['12', '12-hour']] as const} onChange={(v) => clock({ hour12: v === '12' })} /></div>
           {c.hour12 && <div class="field"><label for="ck-ampm">Show AM/PM</label><input id="ck-ampm" type="checkbox" checked={c.ampm} onChange={(e) => clock({ ampm: e.currentTarget.checked })} /></div>}
           <div class="field"><label for="ck-wd">Day of the week (Sat)</label><input id="ck-wd" type="checkbox" checked={c.weekday} onChange={(e) => clock({ weekday: e.currentTarget.checked })} /></div>
           <div class="field"><label for="ck-d">Date (4)</label><input id="ck-d" type="checkbox" checked={c.day} onChange={(e) => clock({ day: e.currentTarget.checked })} /></div>
           <div class="field"><label for="ck-m">Month (Oct)</label><input id="ck-m" type="checkbox" checked={c.month} onChange={(e) => clock({ month: e.currentTarget.checked })} /></div>
+          <Slider id="ck-sp" label="Space between parts" hint="Tightens a long date and time without changing the other items." min={0} max={3} step={1}
+            value={CLOCK_SPACING.indexOf(c.spacing ?? '') < 0 ? 2 : CLOCK_SPACING.indexOf(c.spacing ?? '')} fmt={(v) => ['Tight', 'Thin', 'Normal', 'Wide'][v]}
+            live={(v) => live({ ...cfg, clock: { ...c, spacing: CLOCK_SPACING[v] } })} save={(v) => clock({ spacing: CLOCK_SPACING[v] })} />
         </Card>}
         {k === 'agent' && <AgentAlerts cfg={cfg} save={save} live={live} />}
         {k === 'disk' && <DiskAlert cfg={cfg} save={save} />}
@@ -1290,10 +1300,33 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
 }
 
 /** Settings shared by every item: one item or several, size, spacing, typeface. */
+/** One-click looks: each sets fonts, colours, labels and the agent animation, keeping your items. */
+const THEMES: { key: string; name: string; sample: ComponentChildren; apply: (c: MenuBarCfg) => MenuBarCfg }[] = (() => {
+  const restyle = (c: MenuBarCfg, f: (k: string) => Partial<ItemStyle>) =>
+    Object.fromEntries(c.items.map((k) => [k, { ...(c.styles[k] ?? { label: '', color: '', label_color: '', scale: 0, layout: '' }), ...f(k) }]))
+  const hue: Record<string, string> = { net: '#0a84ff', tokens: '#bf5af2', cpu: '#30d158', temp: '#ff9f0a', mem: '#ff375f', disk: '#64d2ff', battery: '#30d158', clock: '' }
+  return [
+    { key: 'clean', name: 'Clean', sample: <span class="th th-clean">49° 16%</span>,
+      apply: (c) => ({ ...c, font: 'system', weight: 'regular', label_color: '', value_color: '', ring_color: false, agent_motion: 'ring', agent_done: 'badge', styles: restyle(c, () => ({ color: '', label_color: '', layout: '' })) }) },
+    { key: 'stats', name: 'Stats', sample: <span class="th th-stats"><small>CPU</small>16%</span>,
+      apply: (c) => ({ ...c, font: 'system', weight: 'bold', ring_color: false, agent_motion: 'dots', agent_done: 'check', styles: restyle(c, (k) => ({ layout: k === 'net' || k === 'agent' || k === 'clock' ? '' : 'top', label: k === 'battery' ? 'inside' : '', color: '', label_color: '' })) }) },
+    { key: 'colour', name: 'Colourful', sample: <span class="th"><b style={{ color: '#30d158' }}>16%</b> <b style={{ color: '#ff9f0a' }}>49°</b></span>,
+      apply: (c) => ({ ...c, font: 'rounded', weight: 'bold', ring_color: true, agent_motion: 'pulse', agent_done: 'seal', styles: restyle(c, (k) => ({ color: hue[k] ?? '', label_color: hue[k] ?? '' })) }) },
+    { key: 'mono', name: 'Terminal', sample: <span class="th" style={{ fontFamily: 'Menlo, monospace' }}>cpu 16%</span>,
+      apply: (c) => ({ ...c, font: 'menlo', weight: 'regular', ring_color: false, agent_motion: 'dots', agent_done: 'check', styles: restyle(c, (k) => ({ label: k === 'agent' ? '' : 'text', color: '', label_color: '', layout: 'row' })) }) },
+    { key: 'icons', name: 'Icons', sample: <span class="th">⌁ 16% ◔ 49°</span>,
+      apply: (c) => ({ ...c, font: 'system', weight: 'medium', ring_color: false, agent_motion: 'pulse', agent_done: 'badge', styles: restyle(c, (k) => ({ label: k === 'battery' ? 'inside' : k === 'agent' ? '' : 'icon', color: '', label_color: '', layout: 'row' })) }) },
+  ]
+})()
+
 function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCfg) => void; live: (c: MenuBarCfg) => void }) {
   return (
     <div class="mb-pane">
       <div class="mb-pane-head"><div class="mb-title"><span class="mb-title-icon"><NavIcon k="general" /></span><div><h2>General</h2><span class="hint" style={{ margin: 0 }}>For every item. Each item's own look is under its name.</span></div></div></div>
+      <Card title="Theme">
+        <div class="field col"><span class="hint" style={{ margin: 0 }}>A starting point: change anything after, per item or here.</span>
+          <div class="themes">{THEMES.map((t) => <button key={t.key} class="theme-tile" onClick={() => save(t.apply(cfg))}><span class="theme-sample">{t.sample}</span>{t.name}</button>)}</div></div>
+      </Card>
       <Card title="Items">
         <div class="field col"><Tiles label="Items" value={cfg.combined ? 'one' : 'separate'} onChange={(v) => save({ ...cfg, combined: v === 'one' })} options={[
           ['separate', <span class="sep-sample"><i /><i /><i /></span>, 'Separate items · each opens its own panel'],
@@ -1504,7 +1537,9 @@ function TrashConfirm({ item, done, cancel }: { item: StorageItem; done: () => v
 }
 const gbText = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`)
 const RISK = { safe: ['Safe', 'Rebuilds or re-downloads by itself'], caution: ['Caution', 'Large re-download, or may hold things you made'], risky: ['Risky', 'May hold your own data'] } as const
-let lastScan: { at: number; items: StorageItem[] } | null = null // kept while the window is open
+let lastScan: { at: number; items: StorageItem[]; full: boolean } | null = null // kept while the window is open
+
+const GROUP_LOOK: Record<string, [string, string]> = { 'AI tools': ['#bf5af2', '✦'], 'Developer caches': ['#0a84ff', '⌘'], 'Biggest folders': ['#8e8e93', '▤'] }
 
 function StorageTab() {
   const [scan, setScan] = useState(lastScan)
@@ -1513,49 +1548,73 @@ function StorageTab() {
   const [disk, setDisk] = useState<{ free: number; total: number } | null>(null)
   const [copied, setCopied] = useState('')
   const [trashing, setTrashing] = useState('')
-  // Desktop, Documents and Downloads: macOS asks once for each, so only when the person opts in.
-  const [personal, setPersonal] = useState(() => { try { return localStorage.getItem('dt-scan-personal') === '1' } catch { return false } })
   const [moved, setMoved] = useState('')
   useEffect(() => { invoke<{ disk_free: number; disk_total: number }>('system_stats').then((s) => setDisk({ free: s.disk_free, total: s.disk_total }), () => {}) }, [])
   const run = async () => {
     setBusy(true); setErr('')
-    try { lastScan = { at: Date.now(), items: await invoke<StorageItem[]>('storage_scan', { personal }) }; setScan(lastScan) } catch (x) { setErr(String(x)) } finally { setBusy(false) }
+    try {
+      const r = await invoke<{ full_access: boolean; items: StorageItem[] }>('storage_scan')
+      lastScan = { at: Date.now(), items: r.items, full: r.full_access }; setScan(lastScan)
+    } catch (x) { setErr(String(x)) } finally { setBusy(false) }
   }
   const used = disk && disk.total ? (disk.total - disk.free) / disk.total : 0
   const groups = ['AI tools', 'Developer caches', 'Biggest folders']
+  const sum = (g: string) => (scan?.items ?? []).filter((i) => i.group === g).reduce((a, r) => a + r.bytes, 0)
+  const cleanable = (scan?.items ?? []).filter((i) => i.trash && i.risk === 'safe')
+  const biggest = Math.max(1, ...(scan?.items ?? []).map((i) => i.bytes))
+  const seg = (bytes: number) => disk && disk.total ? `${(bytes / disk.total) * 100}%` : '0%'
+  const other = disk ? Math.max(0, disk.total - disk.free - sum('AI tools') - sum('Developer caches')) : 0
   return (
     <div class="page">
       {disk && (
-        <section class="section"><h2>This computer's disk</h2>
-          <div class="disk-head num"><b>{gbText(disk.free)}</b> free of {gbText(disk.total)} · {Math.round(used * 100)}% used</div>
-          <div class="track disk-track" aria-hidden="true"><div class={used >= 0.9 ? 'full' : used >= 0.8 ? 'high' : ''} style={{ width: `${used * 100}%` }} /></div>
+        <section class="st-hero">
+          <div class="st-hero-top">
+            <div><div class="st-free num">{gbText(disk.free)} <span>free</span></div>
+              <div class="hint" style={{ margin: 0 }}>of {gbText(disk.total)} · {Math.round(used * 100)}% used</div></div>
+            <button class="btn primary" disabled={busy} onClick={run}>{busy ? 'Scanning…' : scan ? 'Scan again' : 'Scan this computer'}</button>
+          </div>
+          <div class="st-bar" aria-hidden="true">
+            {scan && <><i style={{ width: seg(sum('AI tools')), background: GROUP_LOOK['AI tools'][0] }} /><i style={{ width: seg(sum('Developer caches')), background: GROUP_LOOK['Developer caches'][0] }} /></>}
+            <i style={{ width: seg(scan ? other : disk.total - disk.free), background: used >= 0.9 ? '#ff453a' : used >= 0.8 ? '#ff9f0a' : 'var(--muted)', opacity: 0.55 }} />
+          </div>
+          {scan && <div class="st-legend">
+            <span><i style={{ background: GROUP_LOOK['AI tools'][0] }} />AI tools {gbText(sum('AI tools'))}</span>
+            <span><i style={{ background: GROUP_LOOK['Developer caches'][0] }} />Developer caches {gbText(sum('Developer caches'))}</span>
+            <span><i style={{ background: 'var(--muted)' }} />Everything else</span>
+          </div>}
+          {busy && <div class="hint" style={{ margin: '8px 0 0' }}>Up to a minute on a full disk.</div>}
+          {!scan && !busy && <div class="hint" style={{ margin: '8px 0 0' }}>Finds what AI models, developer caches and big folders take up, and what's safe to clean.</div>}
         </section>
       )}
-      <div class="toolbar">
-        <button class="btn primary" disabled={busy} onClick={run}>{busy ? 'Scanning… (up to a minute)' : scan ? 'Scan again' : 'Scan this computer'}</button>
-        <span class="hint" style={{ margin: 0 }}>{scan ? `Scanned ${ago(scan.at)}` : 'Finds what AI tools, developer caches and big folders take up.'}</span>
-      </div>
-      <label class="hint" style={{ display: 'flex', gap: 6, alignItems: 'center', margin: '0 0 10px' }}>
-        <input type="checkbox" checked={personal} onChange={(e) => { const v = e.currentTarget.checked; setPersonal(v); try { localStorage.setItem('dt-scan-personal', v ? '1' : '0') } catch { /* fine */ } }} />
-        Include Desktop, Documents and Downloads (macOS asks once for each). Other apps' private data is never scanned, so macOS doesn't ask about it.
-      </label>
+      {scan && !scan.full && (
+        <div class="st-access">
+          <div><b>Scan everything, with no pop-ups</b><div class="hint" style={{ margin: 0 }}>Without Full Disk Access, DeviceTally skips folders macOS would ask about (Desktop, Documents, Downloads, other apps' data). Allow it once in System Settings, then scan again.</div></div>
+          <button class="btn" onClick={() => invoke('open_full_disk_access')}>Open Full Disk Access</button>
+        </div>
+      )}
       {err && <p class="err" role="alert">{err}</p>}
       {moved && <div class="banner" role="status"><span>✓ "{moved}" is in the Bin. Empty the Bin to free the space (or put it back from there).</span><button class="btn" onClick={() => setMoved('')}>OK</button></div>}
+      {scan && cleanable.length > 0 && (
+        <div class="st-clean"><span class="st-clean-n num">{gbText(cleanable.reduce((a, r) => a + r.bytes, 0))}</span>
+          <span>safe to clean in {cleanable.length} {cleanable.length === 1 ? 'cache' : 'caches'}: they rebuild themselves when needed. Look for <span class="risk safe">Safe</span> below.</span></div>
+      )}
       {scan && groups.map((g) => {
         const rows = scan.items.filter((i) => i.group === g)
         if (!rows.length) return null
+        const [col, glyph] = GROUP_LOOK[g]
         return (
           <section class="section" key={g}>
-            <h2>{g} <span class="hint" style={{ margin: 0, fontWeight: 400 }}>· {gbText(rows.reduce((a, r) => a + r.bytes, 0))}{g === 'Biggest folders' ? ' (overlaps the lists above)' : ''}</span></h2>
-            <div class="group">
+            <h2 class="st-h"><span class="st-glyph" style={{ background: col }}>{glyph}</span>{g}<span class="st-h-size num">{gbText(rows.reduce((a, r) => a + r.bytes, 0))}</span></h2>
+            {g === 'Biggest folders' && <p class="hint" style={{ margin: '-4px 0 8px' }}>Folders over 1 GB; they can include the items above.</p>}
+            <div class="st-list">
               {rows.map((r) => (
-                <Fragment key={r.path}><div class="storage-row">
-                  <div class="storage-main">
-                    <div><b>{r.name}</b>{r.risk && <span class={`risk ${r.risk}`} title={RISK[r.risk][1]}>{RISK[r.risk][0]}</span>}</div>
+                <Fragment key={r.path}><div class="st-row">
+                  <div class="st-main">
+                    <div class="st-name"><b>{r.name}</b>{r.risk && <span class={`risk ${r.risk}`} title={RISK[r.risk][1]}>{RISK[r.risk][0]}</span>}</div>
                     {r.about && <div class="hint" style={{ margin: 0 }}>{r.about}</div>}
                     <button class="path" title="Copy the path" onClick={() => navigator.clipboard.writeText(r.path).then(() => setCopied(r.path))}>{r.path}{copied === r.path ? '  ✓ copied' : ''}</button>
                   </div>
-                  <b class="num storage-size">{gbText(r.bytes)}</b>
+                  <div class="st-size"><b class="num">{gbText(r.bytes)}</b><div class="st-mini"><i style={{ width: `${(r.bytes / biggest) * 100}%`, background: col }} /></div></div>
                   <span class="storage-actions">
                     <button class="btn" onClick={() => invoke('reveal_path', { path: r.path })}>Show in Finder</button>
                     {r.trash && <button class="btn" onClick={() => setTrashing(r.path)}>Move to Bin</button>}
@@ -1571,7 +1630,7 @@ function StorageTab() {
           </section>
         )
       })}
-      {scan && <p class="hint">Move to Bin is offered for caches only, never for your documents, app data or the Claude Code transcripts DeviceTally reads. For anything else, use Show in Finder, or a cleaner such as <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-opener').then((m) => m.openUrl('https://github.com/bysiber/cleardisk')) }}>ClearDisk</a> (free), which also moves things to the Bin first. "Safe" items rebuild themselves; check "Risky" ones carefully.</p>}
+      {scan && <p class="hint">Move to Bin is offered for caches only, never for your documents, app data or the Claude Code transcripts DeviceTally reads. Things go to the Bin first, so you can put them back. "Safe" items rebuild themselves; check "Risky" ones carefully.</p>}
     </div>
   )
 }

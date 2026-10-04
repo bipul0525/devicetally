@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.0
+
+- **Network panel like Stats:** upload and download history in one mirrored chart, a connectivity grid with latency and jitter, totals with a reset button, interface, MAC address, local and public IP (with country and provider), DNS, and the apps using the network right now.
+- **Agents panel:** what each agent is working on (the prompt) with a live timer, what needs you, and a history of finished tasks with how long each took; today's count and agent time at the top.
+- **Agent status looks:** while working, a comet ring, a breathing pulse or wave dots; when done, a badge, a seal or a plain check (Menu bar → Agent status → Look).
+- **Battery charger animation:** with the percentage inside the icon, plugging in fills the battery up and pops the bolt in; unplugging fades the bolt out.
+- **Themes for the menu bar:** Clean, Stats, Colourful, Terminal and Icons, as one-click starting points (Menu bar → General).
+- **Tighter spacing for separate items:** macOS's own padding is gone, so Spacing controls the whole gap.
+- **Clock:** digital or analog (the icon alone), never both; its own spacing between the date and time parts.
+- **My usage shows everything** for your computer: by tool (with logos), by model, cost and replies, plus a tool filter.
+- **Storage:** a new design (disk bar by category, what's safe to clean, size bars). No more permission pop-ups: without Full Disk Access it skips folders macOS asks about; give it Full Disk Access once to scan everything.
+- **Dock:** clicking DeviceTally in the Dock opens its window; "Hide from the Dock" (on by default) in the first screen and Settings.
+- The main window opens larger, and its tabs stay on one line.
+- Fixed: the battery colour didn't apply in the "In icon" style, and Large/Max didn't make that icon bigger.
+
 ## 1.2.2
 
 - **"Finished" notifications say which prompt is done:** "Claude Code finished · devicetally — Done: “fix the menu bar freeze” · took 3 min". The prompt's start stays on your computer.

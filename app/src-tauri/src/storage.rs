@@ -99,17 +99,33 @@ const PROTECTED: &[&str] = &[
     "Pictures", "Music", "Movies", ".Trash",
 ];
 
-/// Personal folders macOS asks about once each (Files and Folders); scanned only when asked.
-const PERSONAL: &[&str] = &["Desktop", "Documents", "Downloads"];
+/// Home folders macOS may ask about (Files and Folders, other apps' data); scanned only with Full
+/// Disk Access, which never asks.
+const PERSONAL: &[&str] = &["Desktop", "Documents", "Downloads", "Applications", "Public"];
 
-fn skipped(home: &Path, p: &Path, personal: bool) -> bool {
+/// In ~/Library only these are entered without Full Disk Access (besides Caches and Application
+/// Support, broken down by app): the rest is mostly Apple's and other apps' guarded data.
+const LIBRARY_OK: &[&str] = &["Developer", "Logs", "Android", "pnpm", "Python", "Arduino15", "Homebrew"];
+
+fn skipped(home: &Path, p: &Path, full: bool) -> bool {
     let Ok(rel) = p.strip_prefix(home) else { return true };
     let rel = rel.to_string_lossy();
+    if full {
+        return false;
+    }
     let apple = rel.starts_with("Library/Application Support/com.apple.") || rel.starts_with("Library/Caches/com.apple.");
-    apple || PROTECTED.iter().any(|x| rel == *x) || (!personal && PERSONAL.iter().any(|x| rel == *x))
+    let library_other = rel.strip_prefix("Library/").is_some_and(|r| !r.contains('/') && !LIBRARY_OK.contains(&r));
+    apple || library_other || PROTECTED.iter().any(|x| rel == *x) || PERSONAL.iter().any(|x| rel == *x)
 }
 
-pub fn scan(home: &Path, personal: bool) -> Vec<Item> {
+/// Whether DeviceTally has Full Disk Access: then nothing in the home folder makes macOS ask.
+/// Reading Safari's folder fails quietly without it (it never shows a prompt).
+pub fn full_access(home: &Path) -> bool {
+    std::fs::read_dir(home.join("Library/Safari")).is_ok()
+}
+
+/// `full`: DeviceTally has Full Disk Access (see `full_access`), so every folder can be sized.
+pub fn scan(home: &Path, full: bool) -> Vec<Item> {
     let mut out = vec![];
     let known: Vec<PathBuf> = KNOWN.iter().map(|k| home.join(k.2)).collect();
     for (k, bytes) in KNOWN.iter().zip(sizes(known.clone())) {
@@ -124,7 +140,7 @@ pub fn scan(home: &Path, personal: bool) -> Vec<Item> {
         for e in std::fs::read_dir(&base).into_iter().flatten().flatten() {
             let p = e.path();
             let is_dir = e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink());
-            if is_dir && p != home.join("Library") && p != home.join("Library/Caches") && p != home.join("Library/Application Support") && !skipped(home, &p, personal) {
+            if is_dir && p != home.join("Library") && p != home.join("Library/Caches") && p != home.join("Library/Application Support") && !skipped(home, &p, full) {
                 dirs.push(p);
             }
         }
@@ -207,11 +223,14 @@ mod tests {
     #[test]
     fn never_enters_folders_macos_asks_about() {
         let home = Path::new("/Users/x");
-        assert!(skipped(home, &home.join("Library/Containers"), true));
-        assert!(skipped(home, &home.join("Library/Group Containers"), true));
-        assert!(skipped(home, &home.join("Library/Application Support/com.apple.sharedfilelist"), true));
-        assert!(skipped(home, &home.join("Desktop"), false), "personal folders only when asked");
+        assert!(skipped(home, &home.join("Library/Containers"), false));
+        assert!(skipped(home, &home.join("Library/Group Containers"), false));
+        assert!(skipped(home, &home.join("Library/Application Support/com.apple.sharedfilelist"), false));
+        assert!(skipped(home, &home.join("Desktop"), false), "personal folders only with Full Disk Access");
+        assert!(skipped(home, &home.join("Library/Autosave Information"), false), "unknown ~/Library folders aren't entered");
+        assert!(!skipped(home, &home.join("Library/Developer"), false));
         assert!(!skipped(home, &home.join("Desktop"), true));
+        assert!(!skipped(home, &home.join("Library/Mail"), true), "with Full Disk Access, everything");
         assert!(!skipped(home, &home.join("Library/Caches/Google"), false));
         assert!(!skipped(home, &home.join(".npm"), false));
     }

@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core'
 // In-app updates: the app checks the latest release's latest.json, downloads the update for this
 // platform, verifies its signature (key in tauri.conf.json) and restarts. No browser download, so
 // macOS never shows "damaged".
@@ -60,6 +61,7 @@ export function AppGroup() {
             : <button class="btn" disabled={state === 'checking'} onClick={doCheck}>{state === 'checking' ? 'Checking…' : 'Check for updates'}</button>}
         </div>
         {state === 'none' && <div class="field"><span class="val">You have the latest version.</span></div>}
+        <DockToggle />
         {(state === 'available' || state === 'downloading') && update && (
           <>
             <div class="field"><span><b>Version {update.version} is available</b></span>
@@ -71,6 +73,17 @@ export function AppGroup() {
       </div>
       {err && <p class="err" role="alert">Update failed: {err}</p>}
     </section>
+  )
+}
+
+/** "Hide from the Dock" (macOS): on by default; DeviceTally then opens from the menu bar. */
+export function DockToggle() {
+  const [show, setShow] = useState<boolean | null>(null)
+  useEffect(() => { invoke<boolean>('get_dock').then(setShow, () => {}) }, [])
+  if (show === null || !navigator.userAgent.includes('Mac')) return null
+  return (
+    <div class="field"><label for="dt-dock">Hide from the Dock<div class="hint" style={{ margin: 0 }}>Open DeviceTally from its menu-bar item.</div></label>
+      <input id="dt-dock" type="checkbox" checked={!show} onChange={(e) => { const s = !e.currentTarget.checked; setShow(s); invoke('set_dock', { show: s }) }} /></div>
   )
 }
 

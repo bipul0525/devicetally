@@ -39,6 +39,9 @@ pub struct MenuBar {
     pub combined: bool,
     /// Agent status ring in state colours (orange, red, green) instead of the menu bar's colour.
     pub ring_color: bool,
+    /// Agent status while working: "ring" (comet), "pulse" or "dots"; when done: "badge", "seal", "check".
+    pub agent_motion: String,
+    pub agent_done: String,
     /// Drawn as its own menu-bar item (set by the app, not saved).
     #[serde(skip)]
     pub solo: bool,
@@ -94,6 +97,8 @@ pub struct Clock {
     pub weekday: bool, // Sat
     pub day: bool,     // 4
     pub month: bool,   // Oct
+    /// Space between the clock's parts: "tight", "thin", "" (normal) or "wide".
+    pub spacing: String,
 }
 
 impl Clock {
@@ -103,8 +108,9 @@ impl Clock {
         if self.weekday { f.push("%a"); }
         if self.day { f.push("%-d"); }
         if self.month { f.push("%b"); }
+        let sep = match self.spacing.as_str() { "tight" => "\u{200A}", "thin" => "\u{2009}", "wide" => "\u{2002}", _ => " " };
         f.push(if self.hour12 { if self.ampm { "%-I:%M %p" } else { "%-I:%M" } } else { "%H:%M" });
-        f.join(" ")
+        f.join(sep)
     }
 }
 
@@ -139,7 +145,7 @@ impl Default for MenuBar {
         MenuBar {
             // First launch: three items, normal size and spacing, the menu bar's own colour.
             items: vec!["agent".into(), "net".into(), "temp".into()], layout: "row".into(), size: "small".into(), spacing: "normal".into(), labels: true, net_stack: true, scale: 1.2, gap: 0.0,
-            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(), combined: false, ring_color: false, solo: false,
+            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(), combined: false, ring_color: false, solo: false, agent_motion: "ring".into(), agent_done: "badge".into(),
         }
     }
 }
@@ -155,10 +161,12 @@ pub enum Icon {
     Tokens,
     Clock,
     Dot([u8; 3]), // the Claude Code status dot, in its own colour
-    BatteryIn(f32, bool), // battery with the percentage inside (charge 0..1, charging)
+    /// battery with the percentage inside: charge 0..1, charging, plug animation step (0 = none, see BATTERY_STEPS)
+    BatteryIn(f32, bool, u8),
     /// Agent status: a ring (working, turning with `phase` 0..7), a red "!" (needs you), a green ✓
     /// (done) or a grey ring (idle). Drawn in its own colours.
-    AgentRing(Agent, u8, Option<[u8; 3]>), // colour None = the menu bar's own colour (shapes only)
+    /// state, animation step, colour (None = the menu bar's own colour, shapes only), look
+    AgentRing(Agent, u8, Option<[u8; 3]>, AgentLook),
 }
 
 /// What coding agents are doing on this computer, most urgent first.
@@ -207,7 +215,12 @@ pub struct Values {
     pub tokens: Option<String>,
     pub stats: crate::stats::Stats,
     pub now: chrono::NaiveDateTime,
+    /// Steps into the charger plugged in / unplugged animation (0 = none).
+    pub battery_anim: u8,
 }
+
+/// Frames of the charger animation (one per RING_MS): about 2.4 s.
+pub const BATTERY_STEPS: u8 = 30;
 
 /// The menu-bar pieces for a configuration. Network is two pieces (up, then down).
 pub fn units(cfg: &MenuBar, v: &Values) -> Vec<Unit> {
@@ -263,7 +276,7 @@ pub fn units(cfg: &MenuBar, v: &Values) -> Vec<Unit> {
                 // State colours are optional; by default the ring uses the menu bar's own colour and
                 // the shapes alone tell the states apart (turning ring, !, ✓).
                 let own = cfg.ring_color.then(|| a.rgb());
-                let mut u = unit(Icon::AgentRing(a, v.tick % RING_STEPS, own), if word { if n > 1 { format!("{} {n}", a.word()) } else { a.word().into() } } else { String::new() });
+                let mut u = unit(Icon::AgentRing(a, v.tick % RING_STEPS, own, AgentLook::of(cfg)), if word { if n > 1 { format!("{} {n}", a.word()) } else { a.word().into() } } else { String::new() });
                 if u.color.is_none() {
                     u.color = own;
                 }
@@ -271,7 +284,7 @@ pub fn units(cfg: &MenuBar, v: &Values) -> Vec<Unit> {
             }
             "battery" if st.label == "inside" => {
                 if let Some(b) = s.battery {
-                    out.push(Unit { kind: "battery", label: String::new(), icon: Some(Icon::BatteryIn(b / 100.0, s.charging)), value: String::new(), template: String::new(), scale, color: vc.or(lc), label_color: lc.or(vc), layout: "row".into() });
+                    out.push(Unit { kind: "battery", label: String::new(), icon: Some(Icon::BatteryIn(b / 100.0, s.charging, v.battery_anim)), value: String::new(), template: String::new(), scale, color: vc.or(lc), label_color: vc.or(lc), layout: "row".into() });
                 }
             }
             "battery" => {
@@ -285,9 +298,12 @@ pub fn units(cfg: &MenuBar, v: &Values) -> Vec<Unit> {
                 // Widest case: a long weekday and month, two-digit day and hour.
                 let wide = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap().and_hms_opt(22, 58, 0).unwrap();
                 let (value, template) = (v.now.format(&f).to_string(), wide.format(&f).to_string());
-                // The clock has no text label; it can have an icon.
-                let icon = (mode == "icon").then_some(Icon::Clock);
-                out.push(Unit { kind: "clock", label: String::new(), icon, value, template, scale, color: vc.or(lc), label_color: lc.or(vc), layout });
+                // Digital (the time as text) or analog (the clock icon alone), never both.
+                if mode == "icon" {
+                    out.push(Unit { kind: "clock", label: String::new(), icon: Some(Icon::Clock), value: String::new(), template: String::new(), scale, color: vc.or(lc), label_color: vc.or(lc), layout: "row".into() });
+                } else {
+                    out.push(Unit { kind: "clock", label: String::new(), icon: None, value, template, scale, color: vc.or(lc), label_color: lc.or(vc), layout });
+                }
             }
             _ => {}
         }
@@ -456,8 +472,8 @@ impl Canvas<'_> {
         if matches!(icon, Icon::Dot(_)) {
             return icon_w(icon, h);
         }
-        if let Icon::BatteryIn(level, charging) = icon {
-            return self.battery_in_w(level, charging, h);
+        if let Icon::BatteryIn(level, charging, anim) = icon {
+            return self.battery_in_w(level, charging || anim > 0, h);
         }
         if let Icon::AgentRing(..) = icon {
             return icon_w(icon, h).round();
@@ -470,11 +486,11 @@ impl Canvas<'_> {
 
     /// An icon `h` px high, bottom at `bottom`: the SF Symbol, or a drawn shape if it's missing.
     fn icon(&mut self, icon: Icon, x: f32, bottom: f32, h: f32, rgb: [u8; 3]) {
-        if let Icon::BatteryIn(level, charging) = icon {
-            return self.battery_in(level, charging, x, bottom, h, rgb);
+        if let Icon::BatteryIn(level, charging, anim) = icon {
+            return self.battery_in(level, charging, anim, x, bottom, h, rgb);
         }
-        if let Icon::AgentRing(a, phase, own) = icon {
-            return self.agent_ring(a, phase, x, bottom, h, own.unwrap_or(rgb), own.is_none());
+        if let Icon::AgentRing(a, phase, own, look) = icon {
+            return self.agent_ring(a, phase, x, bottom, h, own.unwrap_or(rgb), own.is_none(), look);
         }
         if let Icon::Dot(own) = icon {
             let (r, cx, cy) = (h * 0.35, x + h * 0.35, bottom - h / 2.0);
@@ -565,7 +581,8 @@ impl Canvas<'_> {
 
     /// Battery with the percentage inside: body height and text size for an icon `h` px high.
     fn battery_in_dims(&self, level: f32, h: f32) -> (f32, f32, String, f32) {
-        let body_h = (h * 1.3).round().min(30.0);
+        // As tall as the menu bar allows (it was capped at 30 px, so Large and Max looked like Normal).
+        let body_h = (h * 1.3).round().min(self.height as f32 - 6.0);
         let tpx = (body_h * 0.74).round();
         let num = format!("{}", (level.clamp(0.0, 1.0) * 100.0).round() as u32);
         let tw = crate::symbols::text(&num, tpx, "system", "bold").map(|t| t.width).unwrap_or(tpx * 1.6);
@@ -581,7 +598,13 @@ impl Canvas<'_> {
 
     /// Draws the battery: a faint rounded outline and nub, the charge filled in solid, and the
     /// percentage cut out of the fill (drawn solid where it falls on the empty part), like iOS.
-    fn battery_in(&mut self, level: f32, charging: bool, x: f32, bottom: f32, h: f32, rgb: [u8; 3]) {
+    /// Plugged in: the charge fills up from empty to its level with a bright edge, and the bolt pops
+    /// in. Unplugged: the bolt fades out. Only for BATTERY_STEPS frames after the change.
+    #[allow(clippy::too_many_arguments)]
+    fn battery_in(&mut self, level: f32, charging: bool, anim: u8, x: f32, bottom: f32, h: f32, rgb: [u8; 3]) {
+        let p = if anim > 0 { anim as f32 / BATTERY_STEPS as f32 } else { 1.0 };
+        let ease = 1.0 - (1.0 - p).powi(3);
+        let shown = if charging && anim > 0 { level * ease } else { level };
         let (body_h, tpx, num, body_w) = self.battery_in_dims(level, h);
         let cy = bottom - h / 2.0;
         let (l, t, r, b) = (x.round(), (cy - body_h / 2.0).round(), (x + body_w).round(), (cy + body_h / 2.0).round());
@@ -619,7 +642,7 @@ impl Canvas<'_> {
         // Charge fill, solid.
         let mut fill = vec![0u8; self.width * self.height];
         let g = 2.5;
-        let fr = l + g + (body_w - 2.0 * g) * level.clamp(0.0, 1.0);
+        let fr = l + g + (body_w - 2.0 * g) * shown.clamp(0.0, 1.0);
         paint(&mut fill, (l, t, r, b), &|px, py| px <= fr && inside(px, py, l + g, t + g, r - g, b - g, (rad - g).max(0.5)));
         // Percentage, centred, cut out of the fill.
         let mut txt = vec![0u8; self.width * self.height];
@@ -645,12 +668,15 @@ impl Canvas<'_> {
                 self.put((i % w) as i32, (i / w) as i32, (a * 255.0) as u8, rgb);
             }
         }
-        if charging {
-            if let Some(m) = crate::symbols::symbol("bolt.fill", (body_h * 0.8) as usize, "bold") {
+        // The bolt: pops in a little larger when plugged in, fades out when unplugged.
+        let bolt_a = if charging { 1.0 } else if anim > 0 { 1.0 - ease } else { 0.0 };
+        let pop = if charging && anim > 0 { 1.0 + 0.35 * (p * std::f32::consts::PI).sin() } else { 1.0 };
+        if bolt_a > 0.0 {
+            if let Some(m) = crate::symbols::symbol("bolt.fill", (body_h * 0.8 * pop) as usize, "bold") {
                 let (bx0, by0) = ((r + 5.0).round() as i32, (cy - m.h as f32 / 2.0).round() as i32);
                 for rr in 0..m.h {
                     for cc in 0..m.w {
-                        self.put(bx0 + cc as i32, by0 + rr as i32, m.alpha[rr * m.w + cc], rgb);
+                        self.put(bx0 + cc as i32, by0 + rr as i32, (m.alpha[rr * m.w + cc] as f32 * bolt_a) as u8, rgb);
                     }
                 }
             }
@@ -673,7 +699,8 @@ impl Canvas<'_> {
 
     /// The agent status ring, `h` px high (a little taller than digits, so it reads at a glance).
     #[allow(clippy::too_many_arguments)]
-    fn agent_ring(&mut self, a: Agent, phase: u8, x: f32, bottom: f32, h: f32, col: [u8; 3], mono: bool) {
+    #[allow(clippy::too_many_arguments)]
+    fn agent_ring(&mut self, a: Agent, phase: u8, x: f32, bottom: f32, h: f32, col: [u8; 3], mono: bool, look: AgentLook) {
         // The ring stands a little taller than the digits, as big as the menu bar allows.
         let d = (h * 1.25).min(self.height as f32 - 4.0).round();
         let r = d / 2.0;
@@ -685,25 +712,54 @@ impl Canvas<'_> {
         match a {
             Agent::Idle => self.fill_alpha(bx, col, if mono { 0.55 } else { 1.0 }, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0),
             Agent::Working => {
-                // A faint full ring, and a bright 3/4 arc whose gap turns a step each redraw.
-                let faint = [col[0], col[1], col[2]];
-                self.fill_alpha(bx, faint, 0.32, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0);
-                let start = phase as f32 * std::f32::consts::TAU / RING_STEPS as f32;
-                self.fill(bx, col, |px, py| {
-                    let on_ring = (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0;
-                    let ang = ((py - cy).atan2(px - cx) - start).rem_euclid(std::f32::consts::TAU);
-                    on_ring && ang < std::f32::consts::TAU * 0.72
-                });
+                let tau = std::f32::consts::TAU;
+                let f = phase as f32 / RING_STEPS as f32; // 0..1 through one cycle
+                match look.motion {
+                    // Breathing: a dot that grows and fades in and out inside a faint ring.
+                    1 => {
+                        let s = (1.0 - (f * tau).cos()) / 2.0;
+                        self.fill_alpha(bx, col, 0.28, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0);
+                        let rr = r * (0.3 + 0.27 * s);
+                        self.fill_alpha(bx, col, 0.45 + 0.55 * s, |px, py| dist(px, py) <= rr);
+                    }
+                    // Three dots in a wave.
+                    2 => {
+                        let dr = d * 0.135;
+                        for i in 0..3 {
+                            let k = (1.0 - ((f - i as f32 / 6.0) * tau).cos()) / 2.0;
+                            let (dx, dy) = (cx + (i as f32 - 1.0) * d * 0.34, cy - k * d * 0.16);
+                            let rr = dr * (0.75 + 0.35 * k);
+                            self.fill_alpha(bx, col, 0.4 + 0.6 * k, |px, py| ((px - dx).powi(2) + (py - dy).powi(2)).sqrt() <= rr);
+                        }
+                    }
+                    // A comet: a bright head with a tail that fades, turning round a faint ring. The
+                    // fading tail reads as smooth motion even at 12 frames a second.
+                    _ => {
+                        self.fill_alpha(bx, col, 0.22, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0);
+                        let head = f * tau;
+                        let len = tau * 0.7;
+                        self.fill_shade(bx, col, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0, |px, py| {
+                            let back = (head - (py - cy).atan2(px - cx)).rem_euclid(tau);
+                            if back < len { 1.0 - (back / len).powf(1.4) } else { 0.0 }
+                        });
+                    }
+                }
             }
             Agent::Waiting | Agent::Done => {
-                self.fill(bx, col, |px, py| dist(px, py) <= r);
+                // Done: a disc, a seal (a disc with a scalloped edge) or the check alone.
+                let plain = a == Agent::Done && look.done == 2;
+                if a == Agent::Done && look.done == 1 {
+                    self.fill(bx, col, |px, py| dist(px, py) <= r * (0.9 + 0.1 * (8.0 * (py - cy).atan2(px - cx)).cos()));
+                } else if !plain {
+                    self.fill(bx, col, |px, py| dist(px, py) <= r);
+                }
                 // White mark: "!" or ✓, antialiased by supersampling.
                 let seg = |px: f32, py: f32, (x1, y1): (f32, f32), (x2, y2): (f32, f32)| {
                     let (dx, dy) = (x2 - x1, y2 - y1);
                     let k = (((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
                     ((px - x1 - k * dx).powi(2) + (py - y1 - k * dy).powi(2)).sqrt()
                 };
-                let w = d * 0.13;
+                let w = d * if plain { 0.17 } else { 0.13 };
                 let p = |fx: f32, fy: f32| (cx - r + d * fx, cy - r + d * fy);
                 let mark: Box<dyn Fn(f32, f32) -> bool> = if a == Agent::Waiting {
                     Box::new(move |px, py| seg(px, py, p(0.5, 0.24), p(0.5, 0.56)) <= w / 2.0 || dist2(px, py, p(0.5, 0.74)) <= w * 0.62)
@@ -721,7 +777,9 @@ impl Canvas<'_> {
                             }
                         }
                         let cov = (n * 255 / 16) as u8;
-                        if mono {
+                        if plain {
+                            self.put(px, py, cov, col);
+                        } else if mono {
                             // Shapes only: the mark is cut out of the disc, so the menu bar shows through.
                             self.knock(px, py, cov);
                         } else {
@@ -738,6 +796,24 @@ impl Canvas<'_> {
         if x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height && cov > 0 {
             let i = (y as usize * self.width + x as usize) * 4 + 3;
             self.rgba[i] = (self.rgba[i] as u32 * (255 - cov as u32) / 255) as u8;
+        }
+    }
+
+    /// Like `fill`, with an opacity per pixel (0..1).
+    fn fill_shade(&mut self, (x0, y0, x1, y1): (f32, f32, f32, f32), rgb: [u8; 3], inside: impl Fn(f32, f32) -> bool, shade: impl Fn(f32, f32) -> f32) {
+        for py in (y0.floor() as i32)..(y1.ceil() as i32) {
+            for px in (x0.floor() as i32)..(x1.ceil() as i32) {
+                let mut n = 0.0;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let (qx, qy) = (px as f32 + (sx as f32 + 0.5) / 4.0, py as f32 + (sy as f32 + 0.5) / 4.0);
+                        if inside(qx, qy) {
+                            n += shade(qx, qy);
+                        }
+                    }
+                }
+                self.put(px, py, (n * 255.0 / 16.0) as u8, rgb);
+            }
         }
     }
 
@@ -790,6 +866,20 @@ impl Canvas<'_> {
 #[cfg(test)]
 pub const FONTS: [&str; 12] = ["system", "rounded", "mono", "newyork", "helvetica", "menlo", "monaco", "din", "futura", "avenir", "georgia", "verdana"];
 
+/// How Agent status looks (see MenuBar::agent_motion / agent_done).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AgentLook {
+    pub motion: u8, // 0 ring, 1 pulse, 2 dots
+    pub done: u8,   // 0 badge, 1 seal, 2 check
+}
+impl AgentLook {
+    pub fn of(cfg: &MenuBar) -> Self {
+        let motion = match cfg.agent_motion.as_str() { "pulse" => 1, "dots" => 2, _ => 0 };
+        let done = match cfg.agent_done.as_str() { "seal" => 1, "check" => 2, _ => 0 };
+        AgentLook { motion, done }
+    }
+}
+
 /// Steps in one turn of the working ring (one step per redraw, see RING_MS).
 pub const RING_STEPS: u8 = 24;
 /// Milliseconds between redraws while the ring turns: 24 × 80 ms, one turn in about 2 s, in 15°
@@ -832,7 +922,7 @@ pub fn render(cfg: &MenuBar, units: &[Unit], fg: [u8; 3]) -> Option<(Vec<u8>, u3
             .collect()
     };
     // Separate items: the spacing is room on both sides of each item (macOS places the items).
-    let pad = if cfg.solo { gap / 2.0 } else { 0.0 };
+    let pad = if cfg.solo { gap / 2.0 + 2.0 } else { 0.0 };
     let width = (bw.iter().sum::<f32>() + gap * (bl.len() - 1) as f32 + 2.0 * pad).ceil() as usize + 4;
     canvas.rgba = vec![0u8; width * height * 4];
     canvas.width = width;
@@ -909,6 +999,7 @@ mod tests {
             tick: 0,
             tokens: Some("151M".into()),
             stats: crate::stats::Stats { cpu: 23.4, mem_used: 6, mem_total: 10, disk_free: 212_000_000_000, net_down: 1_260_000.0, net_up: 48_000.0, battery: Some(82.0), charging: false, cpu_temp: Some(47.4), ..Default::default() },
+            battery_anim: 0,
             now: chrono::NaiveDate::from_ymd_opt(2026, 10, 4).unwrap().and_hms_opt(14, 5, 0).unwrap(),
         }
     }
@@ -942,6 +1033,26 @@ mod tests {
         assert!(units(&bare, &values()).iter().all(|u| u.label.is_empty()), "labels off hides arrows too, like the owner's example");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn battery_in_icon_grows_with_every_size() {
+        let w = |scale: f32| {
+            let mut cfg = MenuBar { items: vec!["battery".into()], scale: 1.0, ..Default::default() };
+            cfg.styles.insert("battery".into(), ItemStyle { label: "inside".into(), scale, ..Default::default() });
+            render(&cfg, &units(&cfg, &values()), [0, 0, 0]).unwrap().1
+        };
+        let (n, l, m) = (w(1.0), w(1.4), w(2.0));
+        assert!(n < l && l < m, "Normal {n} < Large {l} < Max {m}");
+    }
+
+    #[test]
+    fn battery_in_icon_takes_its_own_colour() {
+        let mut cfg = MenuBar { items: vec!["battery".into()], label_color: "#ff453a".into(), ..Default::default() };
+        cfg.styles.insert("battery".into(), ItemStyle { label: "inside".into(), color: "#0a84ff".into(), ..Default::default() });
+        let u = units(&cfg, &values());
+        assert_eq!(u[0].label_color, Some([0x0a, 0x84, 0xff]), "the chosen Battery colour, not the general label colour");
+    }
+
     #[test]
     fn each_item_has_its_own_style() {
         let mut cfg = MenuBar { items: vec!["battery".into(), "cpu".into()], value_color: "#ffffff".into(), ..Default::default() };
@@ -972,7 +1083,7 @@ mod tests {
     #[test]
     fn too_many_items_drop_from_the_end_instead_of_vanishing() {
         let all = ["tokens", "net", "cpu", "temp", "mem", "disk", "battery", "clock"];
-        let cfg = MenuBar { items: all.iter().map(|s| s.to_string()).collect(), clock: Clock { weekday: true, day: true, month: true, hour12: true, ampm: true }, max_width: 120.0, ..Default::default() };
+        let cfg = MenuBar { items: all.iter().map(|s| s.to_string()).collect(), clock: Clock { weekday: true, day: true, month: true, hour12: true, ampm: true, ..Default::default() }, max_width: 120.0, ..Default::default() };
         let u = units(&cfg, &values());
         let (img, hidden) = render_fit(&cfg, &u, [0; 3]);
         let (_, w, _) = img.unwrap();
@@ -986,7 +1097,7 @@ mod tests {
         let clock = |c: Clock| units(&MenuBar { items: vec!["clock".into()], clock: c, ..Default::default() }, &v).remove(0);
         assert_eq!(clock(Clock::default()).value, "14:05");
         assert_eq!(clock(Clock { hour12: true, ampm: true, ..Default::default() }).value, "2:05 PM");
-        let full = clock(Clock { hour12: true, ampm: true, weekday: true, day: true, month: true });
+        let full = clock(Clock { hour12: true, ampm: true, weekday: true, day: true, month: true, ..Default::default() });
         assert_eq!(full.value, "Sun 4 Oct 2:05 PM");
         assert_eq!(full.template, "Wed 30 Sep 10:58 PM");
     }
@@ -1045,7 +1156,7 @@ mod stress {
                                 for (fi, (weight, item_scale)) in [("regular", 0.0), ("medium", 1.4), ("bold", 0.7)].into_iter().enumerate() {
                                     let font = FONTS[(fi + k) % FONTS.len()];
                                     let styles = items.iter().map(|i| (i.clone(), ItemStyle { label: label.into(), scale: item_scale, color: "#33c759".into(), ..Default::default() })).collect();
-                                    let clock = Clock { hour12: true, ampm: true, weekday: true, day: true, month: true };
+                                    let clock = Clock { hour12: true, ampm: true, weekday: true, day: true, month: true, ..Default::default() };
                                     let cfg = MenuBar { items: items.clone(), layout: layout.into(), scale, gap_pt: Some(gap), net_stack, font: font.into(), weight: weight.into(), styles, clock, ..Default::default() };
                                     if let Some((rgba, w, h)) = render(&cfg, &units(&cfg, &v), [0; 3]) {
                                         assert!(h == 36 || h == 44, "18 or 22 pt high, got {h}");
@@ -1095,7 +1206,7 @@ mod preview {
         let Ok(dir) = std::env::var("ICON_PREVIEW_DIR") else { return };
         let icons = |items: &[&str]| items.iter().map(|i| (i.to_string(), ItemStyle { label: "icon".into(), ..Default::default() })).collect::<BTreeMap<_, _>>();
         let all = ["tokens", "cpu", "temp", "mem", "disk", "battery", "clock"];
-        let full = Clock { hour12: true, ampm: true, weekday: true, day: true, month: false };
+        let full = Clock { hour12: true, ampm: true, weekday: true, day: true, month: false, ..Default::default() };
         let cases = [
             ("1-cpu-ssd-label-on-top", MenuBar { items: vec!["cpu".into(), "disk".into()], layout: "top".into(), ..Default::default() }),
             ("2-net-stacked-no-labels", MenuBar { items: vec!["net".into()], labels: false, ..Default::default() }),
@@ -1188,3 +1299,68 @@ mod demo {
     }
 }
 
+
+#[cfg(all(test, target_os = "macos"))]
+mod look_preview {
+    use super::*;
+    /// Manual: AGENT_LOOKS=<dir> cargo test agent_looks -- --ignored  (PPM sheets, 4x, on dark grey)
+    #[test]
+    #[ignore]
+    fn agent_looks() {
+        let Ok(dir) = std::env::var("AGENT_LOOKS") else { return };
+        let mut v = tests::values();
+        let mut rows: Vec<(Vec<u8>, u32, u32)> = vec![];
+        let mut sheets: Vec<Vec<(Vec<u8>, u32, u32)>> = vec![];
+        for (motion, done) in [("ring", "badge"), ("pulse", "seal"), ("dots", "check")] {
+            let cfg = MenuBar { items: vec!["agent".into()], agent_motion: motion.into(), agent_done: done.into(), scale: 1.2, ..Default::default() };
+            let mut frames = vec![];
+            for (a, t) in [(Agent::Working, 0), (Agent::Working, 4), (Agent::Working, 8), (Agent::Working, 12), (Agent::Working, 16), (Agent::Waiting, 0), (Agent::Done, 0), (Agent::Idle, 0)] {
+                v.agent = (a, 1);
+                v.tick = t;
+                frames.push(render(&cfg, &units(&cfg, &v), [255, 255, 255]).unwrap());
+            }
+            sheets.push(frames);
+        }
+        // The charger animation: plugged in (fill rises, bolt pops), then unplugged (bolt fades).
+        let mut cfg = MenuBar { items: vec!["battery".into()], scale: 1.2, ..Default::default() };
+        cfg.styles.insert("battery".into(), ItemStyle { label: "inside".into(), ..Default::default() });
+        v.stats.battery = Some(76.0);
+        let mut frames = vec![];
+        for (charging, step) in [(true, 2), (true, 8), (true, 15), (true, 30), (true, 0), (false, 10), (false, 25), (false, 0)] {
+            v.stats.charging = charging;
+            v.battery_anim = step;
+            frames.push(render(&cfg, &units(&cfg, &v), [255, 255, 255]).unwrap());
+        }
+        sheets.push(frames);
+        for frames in sheets {
+            let (w, h) = (frames.iter().map(|f| f.1 + 8).sum::<u32>(), frames[0].2);
+            let mut img = vec![40u8; (w * h * 3) as usize];
+            let mut x0 = 0;
+            for (rgba, fw, fh) in &frames {
+                for y in 0..*fh {
+                    for x in 0..*fw {
+                        let i = ((y * fw + x) * 4) as usize;
+                        let a = rgba[i + 3] as u32;
+                        let o = ((y * w + x0 + x) * 3) as usize;
+                        for c in 0..3 {
+                            img[o + c] = ((rgba[i + c] as u32 * a + 40 * (255 - a)) / 255) as u8;
+                        }
+                    }
+                }
+                x0 += fw + 8;
+            }
+            rows.push((img, w, h));
+        }
+        for (i, (img, w, h)) in rows.iter().enumerate() {
+            let k = 4;
+            let mut out = format!("P6 {} {} 255\n", w * k, h * k).into_bytes();
+            for y in 0..h * k {
+                for x in 0..w * k {
+                    let o = (((y / k) * w + x / k) * 3) as usize;
+                    out.extend_from_slice(&img[o..o + 3]);
+                }
+            }
+            std::fs::write(format!("{dir}/look{i}.ppm"), out).unwrap();
+        }
+    }
+}

@@ -34,13 +34,24 @@ pub struct Alert {
     pub body: String,
 }
 
+/// A finished task, for the Agents panel's history.
+#[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Finished {
+    pub at: i64,      // ms
+    pub took: i64,    // ms, 0 = unknown
+    pub project: String,
+    pub tool: String, // "" = Claude Code
+    pub prompt: String,
+}
+
 /// Each session's last (state, since), to notice changes between redraws.
 pub type Seen = std::collections::HashMap<String, (String, i64)>;
 
 /// Alerts for sessions that changed to done or waiting since `seen` (then updates it). The first call
 /// (empty `seen`, `first`) only records, so starting the app doesn't replay old alerts. Done tasks
 /// shorter than `min_ms` are skipped (quick back-and-forth needs no ping).
-pub fn alerts(seen: &mut Seen, first: bool, sessions: &[Session], now: i64, min_ms: i64) -> Vec<Alert> {
+/// Every task that finished is also added to `log` (newest first), quick ones too.
+pub fn alerts(seen: &mut Seen, first: bool, sessions: &[Session], now: i64, min_ms: i64, log: &mut Vec<Finished>) -> Vec<Alert> {
     let mut out = vec![];
     for s in sessions {
         let key = (s.state.clone(), s.since);
@@ -53,6 +64,7 @@ pub fn alerts(seen: &mut Seen, first: bool, sessions: &[Session], now: i64, min_
         match s.state.as_str() {
             "done" => {
                 let took = (s.started > 0).then(|| s.since - s.started);
+                log.insert(0, Finished { at: s.since, took: took.unwrap_or(0), project: s.project.clone(), tool: s.tool.clone(), prompt: s.prompt.clone() });
                 if took.is_some_and(|t| t < min_ms) {
                     continue;
                 }
@@ -151,20 +163,21 @@ mod tests {
         let now = 100_000_000;
         let sess = |id: &str, state: &str, started: i64| Session { state: state.into(), since: now, project: "devicetally".into(), tool: String::new(), started, id: id.into(), prompt: String::new() };
         let mut seen = Seen::new();
+        let mut log = vec![];
         // Starting the app: old states are recorded, not announced.
-        assert!(alerts(&mut seen, true, &[sess("a", "done", now - 300_000)], now, 20_000).is_empty());
+        assert!(alerts(&mut seen, true, &[sess("a", "done", now - 300_000)], now, 20_000, &mut log).is_empty());
         // A new long task finishing is announced once.
         let long = [sess("b", "done", now - 150_000)];
-        let a = alerts(&mut seen, false, &long, now, 20_000);
+        let a = alerts(&mut seen, false, &long, now, 20_000, &mut log);
         assert_eq!(a, vec![Alert { waiting: false, title: "Claude Code finished".into(), body: "devicetally · took 3 min".into() }]);
-        assert!(alerts(&mut seen, false, &long, now, 20_000).is_empty(), "not again on the next redraw");
+        assert!(alerts(&mut seen, false, &long, now, 20_000, &mut log).is_empty(), "not again on the next redraw");
         // With the prompt known, the notification says which one is done.
         let named = [Session { prompt: "fix the menu bar freeze".into(), ..sess("p", "done", now - 150_000) }];
-        assert_eq!(alerts(&mut seen, false, &named, now, 20_000), vec![Alert { waiting: false, title: "Claude Code finished · devicetally".into(), body: "Done: “fix the menu bar freeze” · took 3 min".into() }]);
+        assert_eq!(alerts(&mut seen, false, &named, now, 20_000, &mut log), vec![Alert { waiting: false, title: "Claude Code finished · devicetally".into(), body: "Done: “fix the menu bar freeze” · took 3 min".into() }]);
         // A quick one isn't.
-        assert!(alerts(&mut seen, false, &[sess("c", "done", now - 5_000)], now, 20_000).is_empty());
+        assert!(alerts(&mut seen, false, &[sess("c", "done", now - 5_000)], now, 20_000, &mut log).is_empty());
         // Needing you is always announced.
-        let w = alerts(&mut seen, false, &[sess("d", "waiting", now - 5_000)], now, 20_000);
+        let w = alerts(&mut seen, false, &[sess("d", "waiting", now - 5_000)], now, 20_000, &mut log);
         assert!(w[0].waiting && w[0].title == "Claude Code needs you");
     }
 

@@ -1,5 +1,6 @@
 // First run (docs/dev/PLAN-onboarding.md): one question, then only the steps that path needs.
 // The same three paths exist in the terminal; whichever is used, the app ends up in the same state.
+import { DockToggle } from './updates'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -195,7 +196,7 @@ export function Onboarding({ done }: { done: () => void }) {
   return (
     <div class="ob">
       <h1>Welcome to DeviceTally</h1>
-      <p>Track your Claude Code and other AI tool token usage across all your computers.</p>
+      <p>One menu-bar app for all your computers: AI coding usage, agent status, system stats and storage.</p>
       <div class="ob-cards">
         <button class="ob-card" onClick={() => setPath('setup')}>
           <strong>Set up DeviceTally</strong><span>First time. Creates your private server in a free Cloudflare account and makes this computer the admin.</span>
@@ -207,6 +208,7 @@ export function Onboarding({ done }: { done: () => void }) {
           <strong>Sign in as admin</strong><span>You already have a server and want to manage it from here.</span>
         </button>
       </div>
+      <div class="group" style={{ marginTop: 16 }}><DockToggle /></div>
     </div>
   )
 }
