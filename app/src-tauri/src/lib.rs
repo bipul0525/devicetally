@@ -581,8 +581,18 @@ async fn unlock_computer(app: AppHandle, state: State<'_, AppState>) -> Result<(
 
 /// macOS dark mode, checked at most every 10 s (only needed for coloured menu-bar items).
 #[cfg(target_os = "macos")]
+/// The menu bar's own appearance, read from a menu-bar item (it follows the wallpaper, not only the
+/// system's dark mode): 0 unknown, 1 light, 2 dark.
+static BAR_LOOK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Whether text without its own colour should be white in a coloured menu-bar image.
 fn dark_mode() -> bool {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    match BAR_LOOK.load(Ordering::Relaxed) {
+        1 => return false,
+        2 => return true,
+        _ => {}
+    }
     static DARK: AtomicBool = AtomicBool::new(false);
     static CHECKED: AtomicU64 = AtomicU64::new(0);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -799,6 +809,11 @@ fn fit_height(t: &tauri::tray::TrayIcon, w: u32, h: u32, exact: bool) {
             img.setSize(objc2_foundation::NSSize::new(w as f64 / 2.0, h as f64 / 2.0));
         }
         item.setLength(if exact { w as f64 / 2.0 } else { objc2_app_kit::NSVariableStatusItemLength });
+        if let Some(b) = item.button(mtm) {
+            use objc2_app_kit::NSAppearanceCustomization;
+            let dark = b.effectiveAppearance().name().to_string().contains("Dark");
+            BAR_LOOK.store(if dark { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
+        }
     });
     #[cfg(not(target_os = "macos"))]
     let _ = (t, w, h, exact);
@@ -930,6 +945,12 @@ async fn activity() -> Result<Vec<activity::Session>, String> {
     let mut s = activity::read(&agent_dir().join("activity"));
     s.sort_by(|a, b| b.since.cmp(&a.since));
     Ok(s)
+}
+
+/// Whether the menu bar looks dark right now (for the preview in Settings).
+#[tauri::command]
+async fn menubar_dark() -> Result<bool, String> {
+    Ok(dark_mode())
 }
 
 /// Finished agent tasks, newest first, for the Agents panel.
@@ -1502,6 +1523,8 @@ fn show_main(app: &AppHandle, tab: &str) -> tauri::Result<()> {
     let w = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(format!("index.html?view=main&tab={tab}").into()))
         .title("DeviceTally")
         .inner_size(900.0, 640.0)
+        // Tauri's file-drop handler swallows the page's own drag and drop (reordering menu-bar items).
+        .disable_drag_drop_handler()
         .min_inner_size(640.0, 480.0)
         .center()
         .build()?;
@@ -1755,7 +1778,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
-        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_dock, get_dock, set_menubar_live, menubar_preview, system_stats, stats_history, current_panel, top_processes, net_details, reset_net_totals, net_processes, public_ip, open_tab, activity, agent_history, test_alert, open_notification_settings, card_action, preview_sound, list_sounds, storage_scan, open_full_disk_access, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
+        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_dock, get_dock, set_menubar_live, menubar_preview, menubar_dark, system_stats, stats_history, current_panel, top_processes, net_details, reset_net_totals, net_processes, public_ip, open_tab, activity, agent_history, test_alert, open_notification_settings, card_action, preview_sound, list_sounds, storage_scan, open_full_disk_access, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
         .setup(|app| {
             let handle = app.handle().clone();
             let cfg = load_config(&handle);

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.0
+
+- **Separate menu-bar items sit tight:** each is as wide as what it shows (with digits as 8, so it doesn't jump), and Spacing at 0 really means almost touching. Before, each item kept room for its widest possible value plus fixed margins.
+- **One combined item no longer drops items at the end:** it had a hidden 360 pt limit. Maximum width is now "No limit" unless you set one.
+- **Colours match the real menu bar:** text without its own colour follows the menu bar's actual look (which also depends on the wallpaper), not just dark mode, so it's never black on a dark menu bar.
+- **The preview matches the menu bar:** separate items are shown edge to edge, as they are, and Light/Dark starts from how your menu bar looks.
+- **Drag to reorder works:** drag an item's grip (⋮⋮) in the list.
+- **Themes are gone;** everything they set is still under General and each item. **Reset to the default look** (General) undoes a theme and keeps your items.
+- **Quit** button in the popover, next to Settings. Tracking keeps working when the app is closed.
+- Fixed: the prompts list looked broken when a prompt started with an editor note (a style clash with the notification card).
+- Network panel: the Connected dot is green, and the chart colours match Download and Upload.
+
 ## 1.3.0
 
 - **Network panel like Stats:** upload and download history in one mirrored chart, a connectivity grid with latency and jitter, totals with a reset button, interface, MAC address, local and public IP (with country and provider), DNS, and the apps using the network right now.

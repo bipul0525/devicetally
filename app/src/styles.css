@@ -382,15 +382,15 @@ input.toggle:checked::after, .mb-main .field input[type='checkbox']:checked::aft
 .test-result { flex-basis: 100%; font-size: 12px; margin-top: 6px; color: var(--muted); }
 
 /* DeviceTally's own notification card */
-html:has(.notice), html:has(.notice) body { background: transparent; }
-.notice { position: fixed; inset: 4px; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 16px; cursor: default;
+html:has(.dt-card), html:has(.dt-card) body { background: transparent; }
+.dt-card { position: fixed; inset: 4px; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 16px; cursor: default;
   background: rgba(40, 40, 44, 0.86); color: #fff; backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.12); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3); }
-@media (prefers-color-scheme: light) { .notice { background: rgba(246, 246, 248, 0.92); color: #111; border-color: rgba(0, 0, 0, 0.08); } }
-.notice img { width: 36px; height: 36px; border-radius: 8px; flex: none; }
-.notice div { display: flex; flex-direction: column; min-width: 0; font-size: 13px; line-height: 1.3; }
-.notice span { opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.notice-x { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: inherit; opacity: 0; font-size: 11px; }
-.notice:hover .notice-x { opacity: 0.6; }
+@media (prefers-color-scheme: light) { .dt-card { background: rgba(246, 246, 248, 0.92); color: #111; border-color: rgba(0, 0, 0, 0.08); } }
+.dt-card img { width: 36px; height: 36px; border-radius: 8px; flex: none; }
+.dt-card div { display: flex; flex-direction: column; min-width: 0; font-size: 13px; line-height: 1.3; }
+.dt-card span { opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dt-card-x { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: inherit; opacity: 0; font-size: 11px; }
+.dt-card:hover .dt-card-x { opacity: 0.6; }
 
 /* Storage */
 .st-hero { background: var(--fill); border-radius: 14px; padding: 16px 18px; margin-bottom: 14px; }
@@ -467,9 +467,11 @@ html:has(.notice), html:has(.notice) body { background: transparent; }
 .h-act { display: flex; align-items: center; justify-content: space-between; }
 .icon-btn.small { font-size: 14px; padding: 0 4px; }
 
-/* Menu-bar themes */
-.themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 8px; }
-.theme-tile { display: flex; flex-direction: column; gap: 6px; align-items: center; padding: 10px 8px 8px; border-radius: 10px; border: 1px solid var(--line); background: none; color: var(--fg); font-size: 12px; }
-.theme-tile:hover { border-color: var(--accent); }
-.theme-sample { width: 100%; height: 28px; border-radius: 6px; display: grid; place-items: center; background: #1c1c1e; color: #fff; font-size: 12px; }
-.th small { font-size: 7px; display: block; line-height: 1; opacity: 0.8; } .th-stats { text-align: center; line-height: 1.05; font-weight: 700; }
+/* Separate items sit edge to edge in the real menu bar (Spacing is inside each image); match it. */
+.fake-items.sep { gap: 0; }
+.fake-items.sep .fake-item { padding: 0; border-radius: 4px; }
+.grip { cursor: grab; touch-action: none; user-select: none; padding: 6px 2px; opacity: 0.55; }
+.mb-nav-item.dragging .grip { cursor: grabbing; }
+.mb-nav-item.drop-here { box-shadow: inset 0 2px 0 var(--accent); }
+.pop-brand .btn { white-space: nowrap; }
+.pop-brand .icon-btn { padding: 4px 5px; }

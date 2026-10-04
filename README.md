@@ -82,13 +82,13 @@ Tokens and API-equivalent cost by **tool, model, project and computer**, with a 
 <td width="50%" valign="top">
 
 ### A menu bar you design
-**Themes** (Clean, Stats, Colourful, Terminal, Icons) as a one-click start, then every item's label (text, SF Symbols icon or none), layout, size (50–200%), colour and spacing. 12 fonts, a live preview, **battery with the percentage inside** (with a charger animation), a digital or analog clock.
+Every item's label (text, SF Symbols icon or none), layout, size (50–200%), colour and spacing. 12 fonts, a live preview, **battery with the percentage inside** (with a charger animation), a digital or analog clock.
 
 </td>
 </tr>
 <tr>
 <td><img src="docs/assets/overview-dark.png" alt="Overview: devices table, daily chart split by device, usage by tool, model, device and project"></td>
-<td><img src="docs/assets/menubar-themes-dark.png" alt="Menu bar settings: themes, separate or combined items, text size, typeface"></td>
+<td><img src="docs/assets/menubar-settings-dark.png" alt="Menu bar settings: separate or combined items, text size, typeface"></td>
 </tr>
 <tr>
 <td valign="top">

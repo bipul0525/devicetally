@@ -146,6 +146,9 @@ function Popover() {
       <AppTitle />
       <button class="btn primary" onClick={() => invoke('open_dashboard')}>Open DeviceTally</button>
       <button class="icon-btn" aria-label="Settings" title="Settings" onClick={() => invoke('open_settings')}>⚙︎</button>
+      <button class="icon-btn" aria-label="Quit DeviceTally" title="Quit DeviceTally (tracking keeps working)" onClick={() => invoke('quit')}>
+        <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v6" /><path d="M4.6 4.2a5 5 0 1 0 6.8 0" /></svg>
+      </button>
     </div>
   )
   const header = <header class="pop-head">{brand}</header>
@@ -257,10 +260,10 @@ function NoticeCard() {
   useEffect(() => { const u = listen<{ title: string; body: string }>('dt:card', (e) => setN(e.payload)); return () => { u.then((f) => f()) } }, [])
   if (!n) return null
   return (
-    <div class="notice" role="alert" onClick={() => invoke('card_action', { open: true })}>
+    <div class="dt-card" role="alert" onClick={() => invoke('card_action', { open: true })}>
       <img src="/icon.png" alt="" />
       <div><b>{n.title}</b><span>{n.body}</span></div>
-      <button class="notice-x" aria-label="Close" onClick={(e) => { e.stopPropagation(); invoke('card_action', { open: false }) }}>✕</button>
+      <button class="dt-card-x" aria-label="Close" onClick={(e) => { e.stopPropagation(); invoke('card_action', { open: false }) }}>✕</button>
     </div>
   )
 }

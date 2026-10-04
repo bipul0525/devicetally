@@ -1118,6 +1118,8 @@ function BarPreview({ cfg, sel, select }: { cfg: MenuBarCfg; sel: string; select
   const [imgs, setImgs] = useState<ItemImg[] | null>(null)
   const [hidden, setHidden] = useState(0)
   const [dark, setDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches)
+  // Start from how the real menu bar looks (it follows the wallpaper too, not only dark mode).
+  useEffect(() => { invoke<boolean>('menubar_dark').then(setDark, () => {}) }, [])
   const want = useRef(cfg), busy = useRef(false), alive = useRef(true)
   const pump = () => {
     if (busy.current || !alive.current) return
@@ -1139,7 +1141,7 @@ function BarPreview({ cfg, sel, select }: { cfg: MenuBarCfg; sel: string; select
     <div class="bar-preview">
       <div class={`fake-bar ${dark ? 'dark' : 'light'}`}>
         <span class="fake-menus"><b></b><b>Finder</b><span>File</span><span>Edit</span><span>View</span></span>
-        <span class="fake-items">
+        <span class={`fake-items ${cfg.combined ? '' : 'sep'}`}>
           {!imgs?.length && <span class="hint" style={{ margin: 0 }}>{cfg.items.length ? '' : 'Only the DeviceTally icon. Turn on an item on the left.'}</span>}
           {(imgs ?? []).map((x) => (
             <button key={x.k} class={`fake-item ${sel === x.k || (x.k === 'all' && sel === 'general') ? 'sel' : ''}`} title={x.k === 'all' ? 'Combined item' : `${MB_ITEMS.find((m) => m[0] === x.k)?.[1]}: click to change`} onClick={() => select(x.k === 'all' ? 'general' : x.k)}>
@@ -1300,40 +1302,20 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
 }
 
 /** Settings shared by every item: one item or several, size, spacing, typeface. */
-/** One-click looks: each sets fonts, colours, labels and the agent animation, keeping your items. */
-const THEMES: { key: string; name: string; sample: ComponentChildren; apply: (c: MenuBarCfg) => MenuBarCfg }[] = (() => {
-  const restyle = (c: MenuBarCfg, f: (k: string) => Partial<ItemStyle>) =>
-    Object.fromEntries(c.items.map((k) => [k, { ...(c.styles[k] ?? { label: '', color: '', label_color: '', scale: 0, layout: '' }), ...f(k) }]))
-  const hue: Record<string, string> = { net: '#0a84ff', tokens: '#bf5af2', cpu: '#30d158', temp: '#ff9f0a', mem: '#ff375f', disk: '#64d2ff', battery: '#30d158', clock: '' }
-  return [
-    { key: 'clean', name: 'Clean', sample: <span class="th th-clean">49° 16%</span>,
-      apply: (c) => ({ ...c, font: 'system', weight: 'regular', label_color: '', value_color: '', ring_color: false, agent_motion: 'ring', agent_done: 'badge', styles: restyle(c, () => ({ color: '', label_color: '', layout: '' })) }) },
-    { key: 'stats', name: 'Stats', sample: <span class="th th-stats"><small>CPU</small>16%</span>,
-      apply: (c) => ({ ...c, font: 'system', weight: 'bold', ring_color: false, agent_motion: 'dots', agent_done: 'check', styles: restyle(c, (k) => ({ layout: k === 'net' || k === 'agent' || k === 'clock' ? '' : 'top', label: k === 'battery' ? 'inside' : '', color: '', label_color: '' })) }) },
-    { key: 'colour', name: 'Colourful', sample: <span class="th"><b style={{ color: '#30d158' }}>16%</b> <b style={{ color: '#ff9f0a' }}>49°</b></span>,
-      apply: (c) => ({ ...c, font: 'rounded', weight: 'bold', ring_color: true, agent_motion: 'pulse', agent_done: 'seal', styles: restyle(c, (k) => ({ color: hue[k] ?? '', label_color: hue[k] ?? '' })) }) },
-    { key: 'mono', name: 'Terminal', sample: <span class="th" style={{ fontFamily: 'Menlo, monospace' }}>cpu 16%</span>,
-      apply: (c) => ({ ...c, font: 'menlo', weight: 'regular', ring_color: false, agent_motion: 'dots', agent_done: 'check', styles: restyle(c, (k) => ({ label: k === 'agent' ? '' : 'text', color: '', label_color: '', layout: 'row' })) }) },
-    { key: 'icons', name: 'Icons', sample: <span class="th">⌁ 16% ◔ 49°</span>,
-      apply: (c) => ({ ...c, font: 'system', weight: 'medium', ring_color: false, agent_motion: 'pulse', agent_done: 'badge', styles: restyle(c, (k) => ({ label: k === 'battery' ? 'inside' : k === 'agent' ? '' : 'icon', color: '', label_color: '', layout: 'row' })) }) },
-  ]
-})()
-
 function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCfg) => void; live: (c: MenuBarCfg) => void }) {
   return (
     <div class="mb-pane">
       <div class="mb-pane-head"><div class="mb-title"><span class="mb-title-icon"><NavIcon k="general" /></span><div><h2>General</h2><span class="hint" style={{ margin: 0 }}>For every item. Each item's own look is under its name.</span></div></div></div>
-      <Card title="Theme">
-        <div class="field col"><span class="hint" style={{ margin: 0 }}>A starting point: change anything after, per item or here.</span>
-          <div class="themes">{THEMES.map((t) => <button key={t.key} class="theme-tile" onClick={() => save(t.apply(cfg))}><span class="theme-sample">{t.sample}</span>{t.name}</button>)}</div></div>
-      </Card>
+      <div class="field" style={{ justifyContent: 'flex-end', padding: 0, border: 0 }}>
+        <button class="btn" title="Keeps your items and their order" onClick={() => save({ ...cfg, font: 'system', weight: 'regular', label_color: '', value_color: '', ring_color: false, labels: true, layout: 'row', scale: 0, gap_pt: null, agent_motion: 'ring', agent_done: 'badge', styles: {} })}>Reset to the default look</button>
+      </div>
       <Card title="Items">
         <div class="field col"><Tiles label="Items" value={cfg.combined ? 'one' : 'separate'} onChange={(v) => save({ ...cfg, combined: v === 'one' })} options={[
           ['separate', <span class="sep-sample"><i /><i /><i /></span>, 'Separate items · each opens its own panel'],
           ['one', <span class="sep-sample one"><i /></span>, 'One combined item · opens everything'],
         ]} /></div>
-        {cfg.combined && <Slider id="mbw" label="Maximum width" hint="macOS hides a menu-bar item that doesn't fit, so items at the end are left out instead." min={80} max={600} step={10} value={cfg.max_width || 360} fmt={(v) => `${v} pt`}
-          live={(v) => live({ ...cfg, max_width: v })} save={(v) => save({ ...cfg, max_width: v })} />}
+        {cfg.combined && <Slider id="mbw" label="Maximum width" hint="Items past it are left out. macOS hides a whole item that doesn't fit next to the notch, so a limit keeps the first items visible." min={80} max={1000} step={10} value={cfg.max_width > 0 ? cfg.max_width : 1000} fmt={(v) => (v >= 1000 ? 'No limit' : `${v} pt`)}
+          live={(v) => live({ ...cfg, max_width: v >= 1000 ? 0 : v })} save={(v) => save({ ...cfg, max_width: v >= 1000 ? 0 : v })} />}
       </Card>
       <Card title="Text size">
         <div class="field"><SizeControl id="mbs" value={Math.round(presetScale(cfg) * 100)} live={(v) => live({ ...cfg, scale: v / 100 })} save={(v) => save({ ...cfg, scale: v / 100 })} /></div>
@@ -1348,7 +1330,7 @@ function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCf
           <input id="mbl" type="checkbox" checked={cfg.labels} onChange={(e) => save({ ...cfg, labels: e.currentTarget.checked })} /></div>
       </Card>
       <Card title="Spacing">
-        <Slider id="mbg" label="Between items" hint={cfg.combined ? undefined : "Room on each side of every menu-bar item."} min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`} live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
+        <Slider id="mbg" label="Between items" hint={cfg.combined ? undefined : "The gap between neighbouring menu-bar items."} min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`} live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
       </Card>
     </div>
   )
@@ -1424,6 +1406,37 @@ function MenuBarTab() {
       setCfg(c)
     })
   }, [])
+  // Drag the grip to reorder items in the menu bar (pointer events: the webview's own drag and
+  // drop isn't reliable). The rows are rendered by a plain function, not a component defined here,
+  // so a re-render while dragging keeps the same elements.
+  const [drag, setDrag] = useState<{ k: string; over: string } | null>(null)
+  const cfgRef = useRef(cfg)
+  const saveRef = useRef<((c: MenuBarCfg) => void) | null>(null)
+  cfgRef.current = cfg
+  // Listeners are added right in pointerdown (not in an effect), so even a quick flick is caught.
+  const startDrag = (k: string) => {
+    let over = k
+    setDrag({ k, over })
+    const move = (e: PointerEvent) => {
+      const o = (document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-reorder]') as HTMLElement | null)?.dataset.reorder
+      if (o && o !== over) { over = o; setDrag({ k, over }) }
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+      setDrag(null)
+      const c = cfgRef.current
+      if (!c || over === k) return
+      const items = c.items.filter((x) => x !== k)
+      const at = c.items.indexOf(over) > c.items.indexOf(k) ? items.indexOf(over) + 1 : items.indexOf(over)
+      items.splice(at, 0, k)
+      saveRef.current?.({ ...c, items })
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+  }
   if (!cfg) return null
   const save = (next: MenuBarCfg) => { setCfg(next); liveWant.current = null; invoke('set_menubar', { cfg: next }) }
   // While dragging: the real menu bar follows too (not saved until release), one update at a time.
@@ -1441,20 +1454,10 @@ function MenuBarTab() {
   const shown = cfg.items.map((k) => MB_ITEMS.find((x) => x[0] === k)!).filter(Boolean)
   const hidden = MB_ITEMS.filter(([k]) => !cfg.items.includes(k))
   const toggle = (k: string) => save({ ...cfg, items: cfg.items.includes(k) ? cfg.items.filter((x) => x !== k) : [...cfg.items, k] })
-  // Drag items in the list to reorder them in the menu bar.
-  const [drag, setDrag] = useState('')
-  const drop = (target: string) => {
-    if (!drag || drag === target) return
-    const items = cfg.items.filter((x) => x !== drag)
-    items.splice(items.indexOf(target), 0, drag)
-    setDrag('')
-    save({ ...cfg, items })
-  }
-  const NavItem = ({ k, l, on }: { k: string; l: string; on?: boolean }) => (
-    <div class={`mb-nav-item ${sel === k ? 'active' : ''} ${on === false ? 'off' : ''} ${drag === k ? 'dragging' : ''}`}
-      draggable={on === true} onDragStart={() => setDrag(k)} onDragEnd={() => setDrag('')}
-      onDragOver={(e) => { if (on && drag) e.preventDefault() }} onDrop={() => on && drop(k)}>
-      {on === true && <span class="grip" aria-hidden="true" title="Drag to reorder">⋮⋮</span>}
+  saveRef.current = save
+  const navItem = (k: string, l: string, on?: boolean) => (
+    <div key={k} data-reorder={on ? k : undefined} class={`mb-nav-item ${sel === k ? 'active' : ''} ${on === false ? 'off' : ''} ${drag?.k === k ? 'dragging' : ''} ${drag && drag.over === k && drag.k !== k ? 'drop-here' : ''}`}>
+      {on === true && <span class="grip" title="Drag to reorder" onPointerDown={(e) => { e.preventDefault(); startDrag(k) }}>⋮⋮</span>}
       <button class="mb-nav-btn" onClick={() => setSel(k)}><NavIcon k={k} /><span>{l}</span></button>
       {on !== undefined && <input type="checkbox" class="toggle" aria-label={`Show ${l}`} title={on ? 'Shown in the menu bar' : 'Not shown'} checked={on} onChange={() => toggle(k)} />}
     </div>
@@ -1462,12 +1465,12 @@ function MenuBarTab() {
   return (
     <div class="mb-split">
       <nav class="mb-side" aria-label="Menu bar sections">
-        <NavItem k="general" l="General" />
+        {navItem('general', 'General')}
         <div class="mb-nav-h">In the menu bar <span class="mb-nav-sub">drag to reorder</span></div>
-        {shown.map(([k, l]) => <NavItem key={k} k={k} l={l} on />)}
+        {shown.map(([k, l]) => navItem(k, l, true))}
         {!shown.length && <div class="hint" style={{ margin: '2px 10px' }}>Nothing yet</div>}
         {hidden.length > 0 && <div class="mb-nav-h">More</div>}
-        {hidden.map(([k, l]) => <NavItem key={k} k={k} l={l} on={false} />)}
+        {hidden.map(([k, l]) => navItem(k, l, false))}
       </nav>
       <div class="mb-main">
         <div class="mb-top"><BarPreview cfg={cfg} sel={sel} select={setSel} /></div>

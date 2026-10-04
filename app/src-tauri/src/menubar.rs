@@ -133,7 +133,8 @@ impl MenuBar {
     }
     /// Custom colours make a coloured image; otherwise a template image that macOS tints.
     pub fn max_width_px(&self) -> usize {
-        (if self.max_width > 0.0 { self.max_width.clamp(60.0, 1000.0) } else { 360.0 } * 2.0) as usize
+        // 0 = no limit (it used to default to 360 pt, which silently dropped items at the end).
+        (if self.max_width > 0.0 && self.max_width < 1000.0 { self.max_width.max(60.0) } else { 4000.0 } * 2.0) as usize
     }
     pub fn colored(&self) -> bool {
         !self.label_color.is_empty() || !self.value_color.is_empty() || self.styles.iter().any(|(k, s)| self.items.contains(k) && (!s.color.is_empty() || !s.label_color.is_empty()))
@@ -908,7 +909,13 @@ pub fn render(cfg: &MenuBar, units: &[Unit], fg: [u8; 3]) -> Option<(Vec<u8>, u3
     }
     let bw: Vec<f32> = {
         let c = &canvas;
-        let slot = |u: &Unit, px: f32| c.width(&u.value, px).max(c.width(&u.template, px));
+        // Separate items are as wide as their value with every digit as 8 (so they don't jump as
+        // numbers change); one combined item keeps room for the widest value.
+        let solo = cfg.solo;
+        let slot = |u: &Unit, px: f32| {
+            let roomy = if solo { u.value.chars().map(|ch| if ch.is_ascii_digit() { '8' } else { ch }).collect::<String>() } else { u.template.clone() };
+            c.width(&u.value, px).max(c.width(&roomy, px))
+        };
         let line_w = |u: &Unit, (vpx, lpx): (f32, f32)| c.label_w(u, lpx, vpx) + slot(u, vpx);
         bl.iter()
             .map(|b| match b {
@@ -922,7 +929,9 @@ pub fn render(cfg: &MenuBar, units: &[Unit], fg: [u8; 3]) -> Option<(Vec<u8>, u3
             .collect()
     };
     // Separate items: the spacing is room on both sides of each item (macOS places the items).
-    let pad = if cfg.solo { gap / 2.0 + 2.0 } else { 0.0 };
+    // Margin on each side: 2 px; separate items too, plus half the spacing (macOS adds nothing
+    // around them, see fit_height in lib.rs).
+    let pad = if cfg.solo { gap / 2.0 } else { 0.0 };
     let width = (bw.iter().sum::<f32>() + gap * (bl.len() - 1) as f32 + 2.0 * pad).ceil() as usize + 4;
     canvas.rgba = vec![0u8; width * height * 4];
     canvas.width = width;
@@ -1361,6 +1370,61 @@ mod look_preview {
                 }
             }
             std::fs::write(format!("{dir}/look{i}.ppm"), out).unwrap();
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod space_probe {
+    use super::*;
+    /// Nothing may touch the image's left or right edge (it would look cut off in the menu bar), in
+    /// any font, weight, size, layout or label style, combined or separate.
+    #[test]
+    fn nothing_is_cut_off_at_the_edges() {
+        let mut v = tests::values();
+        v.stats.battery = Some(100.0);
+        v.stats.charging = true;
+        let all = ["agent", "tokens", "net", "cpu", "temp", "mem", "disk", "battery", "clock"];
+        let mut bad = vec![];
+        for font in ["system", "rounded", "mono", "menlo", "din", "georgia", "futura"] {
+            for weight in ["regular", "bold"] {
+                for scale in [0.5, 1.0, 1.4, 2.0] {
+                    for label in ["", "text", "icon", "none", "inside"] {
+                        for layout in ["row", "stacked", "top"] {
+                            let styles: BTreeMap<String, ItemStyle> = all.iter().map(|k| (k.to_string(), ItemStyle { label: label.into(), layout: layout.into(), ..Default::default() })).collect();
+                            let base = MenuBar { items: all.map(String::from).to_vec(), font: font.into(), weight: weight.into(), scale, styles, gap_pt: Some(0.0), ..Default::default() };
+                            let mut cases = vec![base.clone()];
+                            for k in all {
+                                cases.push(MenuBar { items: vec![k.into()], solo: true, ..base.clone() });
+                            }
+                            for cfg in cases {
+                                let Some((rgba, w, h)) = render(&cfg, &units(&cfg, &v), [0, 0, 0]) else { continue };
+                                let col = |x: u32| (0..h).any(|y| rgba[((y * w + x) * 4 + 3) as usize] > 40);
+                                if col(0) || col(w - 1) {
+                                    bad.push(format!("{:?} {font} {weight} {scale} {label} {layout}", cfg.items));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut kinds: Vec<String> = bad.iter().map(|b| b.split(" ").take(2).collect::<Vec<_>>().join(" ")).collect();
+        kinds.dedup();
+        assert!(bad.is_empty(), "{} cut off: {:?}", bad.len(), kinds);
+    }
+
+    #[test]
+    #[ignore]
+    fn empty_columns() {
+        let v = tests::values();
+        for item in ["agent", "net", "cpu", "temp", "mem", "disk", "battery", "clock", "tokens"] {
+            let cfg = MenuBar { items: vec![item.into()], solo: true, gap_pt: Some(0.0), ..Default::default() };
+            let Some((rgba, w, h)) = render(&cfg, &units(&cfg, &v), [0, 0, 0]) else { continue };
+            let col = |x: u32| (0..h).any(|y| rgba[((y * w + x) * 4 + 3) as usize] > 8);
+            let first = (0..w).find(|&x| col(x)).unwrap_or(0);
+            let last = (0..w).rev().find(|&x| col(x)).unwrap_or(0);
+            println!("{item:8} w={w:4} left={first:3} right={:3}", w - 1 - last);
         }
     }
 }
