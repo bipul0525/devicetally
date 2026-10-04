@@ -892,7 +892,7 @@ function DeleteEverything() {
     <section class="section"><h2>Stop using DeviceTally</h2>
       <div class="group">
         {!open ? (
-          <div class="field"><span>Delete your server, its database and all usage in Cloudflare, and remove tracking from this computer.</span><button class="btn danger" onClick={() => setOpen(true)}>Delete DeviceTally…</button></div>
+          <div class="field"><span>Delete your server, its database and all usage in Cloudflare, and remove tracking from this computer.</span><button class="btn danger" onClick={() => setOpen(true)}>Delete DeviceTally</button></div>
         ) : (
           <form onSubmit={go} style={{ padding: '8px 0' }}>
             <p style={{ marginTop: 0 }}>This can't be undone. Export your data first if you want a copy. Other computers stop syncing; remove the app from them by dragging it to the Bin.</p>

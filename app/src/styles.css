@@ -182,7 +182,7 @@ table.list tbody tr.selected td:first-child { box-shadow: inset 2px 0 0 var(--ac
 label.disabled { opacity: .45; }
 
 .request { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; color: var(--warn, #ff9f0a); font-size: 12px; }
-.btn.danger { color: #fff; background: #d93a2b; border-color: #d93a2b; }
+.btn.danger { color: #fff; background: #d93a2b; border-color: #d93a2b; white-space: nowrap; font-size: 12px; padding: 4px 12px; flex: none; }
 .btn.danger:disabled { opacity: .5; }
 
 .inline-confirm { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
