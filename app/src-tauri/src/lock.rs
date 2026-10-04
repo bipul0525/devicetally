@@ -25,9 +25,8 @@ pub fn with_hooks(existing: &str, only_ours: bool, block_skip: bool) -> Result<S
         let list = hooks.as_object_mut().ok_or("hooks is not an object")?.entry(ev).or_insert_with(|| json!([]));
         list.as_array_mut().ok_or("hook list is not an array")?.push(json!({ "hooks": [{ "type": "command", "command": format!("\"{BIN}\" hook {ev}"), "async": true, "timeout": 10 }] }));
     }
-    // Keep transcripts for a year (Claude Code's default cleanup is 30 days).
-    let keep = s.get("cleanupPeriodDays").and_then(|v| v.as_i64()).unwrap_or(0).max(365);
-    s.insert("cleanupPeriodDays".into(), json!(keep));
+    // Transcript cleanup stays Claude Code's own (30 days by default): DeviceTally uploads within
+    // seconds, so it needs no longer retention.
     if only_ours {
         s.insert("allowManagedHooksOnly".into(), json!(true));
     } else {
@@ -111,7 +110,7 @@ mod tests {
         assert_eq!(locked["model"], "opus", "other settings kept");
         assert_eq!(locked["hooks"]["Stop"].as_array().unwrap().len(), 2, "their Stop hook kept, ours added");
         assert!(locked["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].as_str().unwrap().contains("DeviceTally/bin/devicetally\" hook UserPromptSubmit"));
-        assert_eq!(locked["cleanupPeriodDays"], 365);
+        assert_eq!(locked["cleanupPeriodDays"], 30, "the user's own retention is left alone");
         assert_eq!(locked["allowManagedHooksOnly"], true);
         assert_eq!(locked["permissions"]["disableBypassPermissionsMode"], "disable");
         // Locking twice doesn't duplicate.

@@ -796,7 +796,7 @@ function LockGroup() {
         </>}
         {!st.supported && <div class="field"><span class="hint" style={{ margin: 0 }}>Available on macOS for now.</span></div>}
       </div>
-      <p class="hint">Works fully when the person uses a standard (not administrator) Mac account and doesn't know the admin password. Also keeps Claude Code's transcripts for a year. macOS asks for an administrator's password.</p>
+      <p class="hint">Works fully when the person uses a standard (not administrator) Mac account and doesn't know the admin password. macOS asks for an administrator's password.</p>
       {msg && <p class="hint" role="status">{msg}</p>}
     </section>
   )
