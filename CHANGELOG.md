@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.1
+
+- **Fixed: adding or removing a menu-bar item could freeze DeviceTally** (it had to be force-quit). All menu-bar changes now happen one at a time on the app's main thread.
+- **Fixed: making one item large shrank the others.** Large items are now shown at the menu bar's full height, and each item keeps its own size.
+- **Fixed: Agent status could stay idle while an agent was working.** The tracker used by Claude Code's hooks was only updated by its own daily check, so after an app update it could stay old. DeviceTally now updates it on start.
+- Network panel: total upload and download.
+
 ## 1.2.0
 
 - **Menu bar settings redesigned:** a live, clickable preview of your menu bar (light or dark), item tiles, one-click size presets, drag to reorder, and each item's options grouped in cards.

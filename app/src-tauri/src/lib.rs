@@ -44,7 +44,6 @@ struct AppState {
     // Latest reading, reused by the Settings preview so it never takes its own samples.
     last_stats: Mutex<stats::Stats>,
     tokens_today: Mutex<Option<String>>,
-    last_icon: Mutex<Vec<u8>>,
     // Claude Code status dot: when the popover was last opened (clears "done"), and the last dot
     // (a change to done or waiting can play a sound).
     activity_seen: Mutex<i64>,
@@ -573,7 +572,6 @@ fn dark_mode() -> bool {
 /// and the icon is replaced only when it changed.
 fn draw_menubar(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
     let cfg = state.config.lock().unwrap().menubar.clone();
     let needs_stats = cfg.items.iter().any(|i| matches!(i.as_str(), "net" | "cpu" | "temp" | "mem" | "disk" | "battery"));
     let sessions = activity::read(&agent_dir().join("activity"));
@@ -619,62 +617,103 @@ fn draw_menubar(app: &AppHandle) {
     }
     // Separate items (macOS): one menu-bar item per module, each opening its own panel.
     let separate = cfg!(target_os = "macos") && !cfg.combined && !cfg.items.is_empty();
-    sync_trays(app, if separate { &cfg.items } else { &[] });
-    let _ = tray.set_visible(!separate);
+    // Images are drawn here; the menu bar itself is changed only on the main thread (below).
     #[cfg(target_os = "macos")]
-    if separate {
-        let mut icons = state.item_icons.lock().unwrap();
-        for item in &cfg.items {
-            let Some(t) = app.tray_by_id(&format!("mb-{item}")) else { continue };
-            let one = menubar::MenuBar { items: vec![item.clone()], ..cfg.clone() };
-            let u = menubar::units(&one, &values);
-            let colored = one.colored() || u.iter().any(|x| x.color.is_some());
-            let fg = if colored && dark_mode() { [255, 255, 255] } else { [0, 0, 0] };
-            match menubar::render(&one, &u, fg) {
-                Some((rgba, w, h)) => {
-                    let _ = t.set_visible(true);
-                    let _ = t.set_tooltip(Some(format!("DeviceTally: {}", menubar::text(&u))));
-                    if icons.get(item) != Some(&rgba) {
-                        let _ = t.set_icon(Some(tauri::image::Image::new_owned(rgba.clone(), w, h)));
-                        let _ = t.set_icon_as_template(!colored);
-                        icons.insert(item.clone(), rgba);
-                    }
-                }
-                // Nothing to show (e.g. no temperature sensor, no battery): hide that item.
-                None => {
-                    let _ = t.set_visible(false);
-                }
-            }
-        }
-        return;
-    }
-    let _ = tray.set_tooltip(Some(if units.is_empty() { "DeviceTally".to_string() } else { format!("DeviceTally: {}", menubar::text(&units)) }));
-    #[cfg(target_os = "macos")]
-    {
-        let mut last = state.last_icon.lock().unwrap();
-        // Template images are tinted by macOS; a coloured image needs a text colour for the items
-        // without their own colour: white in dark mode, black in light mode.
+    let drawn: Vec<(String, Option<Drawn>)> = if separate {
+        cfg.items
+            .iter()
+            .map(|item| {
+                let one = menubar::MenuBar { items: vec![item.clone()], ..cfg.clone() };
+                let u = menubar::units(&one, &values);
+                let colored = one.colored() || u.iter().any(|x| x.color.is_some());
+                let fg = if colored && dark_mode() { [255, 255, 255] } else { [0, 0, 0] };
+                (item.clone(), menubar::render(&one, &u, fg).map(|(rgba, w, h)| Drawn { rgba, w, h, colored, tip: format!("DeviceTally: {}", menubar::text(&u)) }))
+            })
+            .collect()
+    } else {
         let colored = cfg.colored() || dot.is_some() || units.iter().any(|u| u.color.is_some());
         let fg = if colored && dark_mode() { [255, 255, 255] } else { [0, 0, 0] };
-        match menubar::render_fit(&cfg, &units, fg).0 {
-            Some((rgba, w, h)) => {
-                if *last != rgba {
-                    let _ = tray.set_icon(Some(tauri::image::Image::new_owned(rgba.clone(), w, h)));
-                    let _ = tray.set_icon_as_template(!colored);
-                    let _ = tray.set_title(None::<&str>);
-                    *last = rgba;
+        let tip = if units.is_empty() { "DeviceTally".to_string() } else { format!("DeviceTally: {}", menubar::text(&units)) };
+        vec![(String::new(), menubar::render_fit(&cfg, &units, fg).0.map(|(rgba, w, h)| Drawn { rgba, w, h, colored, tip }))]
+    };
+    #[cfg(not(target_os = "macos"))]
+    let drawn: Vec<(String, Option<Drawn>)> = vec![];
+    let want: Vec<String> = if separate { cfg.items.clone() } else { vec![] };
+    let tip = if units.is_empty() { "DeviceTally".to_string() } else { format!("DeviceTally: {}", menubar::text(&units)) };
+    // Adding or removing menu-bar items from another thread made that thread wait for the main
+    // thread while holding locks the main thread needed: the app froze. Everything that touches the
+    // menu bar now runs on the main thread, one update at a time.
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || apply_menubar(&app2, &want, drawn, tip));
+}
+
+/// One menu-bar image, drawn and ready to show.
+struct Drawn {
+    rgba: Vec<u8>,
+    w: u32,
+    h: u32,
+    colored: bool,
+    tip: String,
+}
+
+/// Shows drawn images in the menu bar. Main thread only.
+fn apply_menubar(app: &AppHandle, want: &[String], drawn: Vec<(String, Option<Drawn>)>, tip: String) {
+    let state = app.state::<AppState>();
+    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
+    let separate = !want.is_empty();
+    sync_trays(app, want);
+    let _ = tray.set_visible(!separate);
+    if !cfg!(target_os = "macos") {
+        let _ = tray.set_tooltip(Some(tip));
+        return;
+    }
+    let mut icons = state.item_icons.lock().unwrap();
+    for (item, d) in drawn {
+        let t = if separate { app.tray_by_id(&format!("mb-{item}")) } else { Some(tray.clone()) };
+        let Some(t) = t else { continue };
+        match d {
+            Some(d) => {
+                if separate {
+                    let _ = t.set_visible(true);
+                }
+                let _ = t.set_tooltip(Some(&d.tip));
+                if icons.get(&item) != Some(&d.rgba) {
+                    let _ = t.set_icon(Some(tauri::image::Image::new_owned(d.rgba.clone(), d.w, d.h)));
+                    let _ = t.set_icon_as_template(!d.colored);
+                    let _ = t.set_title(None::<&str>);
+                    fit_height(&t, d.w, d.h);
+                    icons.insert(item, d.rgba);
                 }
             }
+            // Nothing to show (e.g. no temperature sensor, no battery): hide that item.
+            None if separate => {
+                let _ = t.set_visible(false);
+            }
             None => {
-                if !last.is_empty() {
+                if icons.remove(&item).is_some() {
                     if let Ok(img) = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
-                        let _ = tray.set_icon(Some(img));
+                        let _ = t.set_icon(Some(img));
                     }
-                    last.clear();
                 }
             }
         }
     }
+}
+
+/// The tray library always shows images 18 pt high, so a 44 px (22 pt, full menu-bar height) image
+/// was squeezed, shrinking everything in it. Show it at its real size: 2 px per point.
+fn fit_height(t: &tauri::tray::TrayIcon, w: u32, h: u32) {
+    #[cfg(target_os = "macos")]
+    let _ = t.with_inner_tray_icon(move |inner| {
+        let Some(item) = inner.ns_status_item() else { return };
+        // SAFETY: called on the main thread (apply_menubar).
+        let mtm = unsafe { objc2_foundation::MainThreadMarker::new_unchecked() };
+        if let Some(img) = item.button(mtm).and_then(|b| b.image()) {
+            img.setSize(objc2_foundation::NSSize::new(w as f64 / 2.0, h as f64 / 2.0));
+        }
+    });
+    #[cfg(not(target_os = "macos"))]
+    let _ = (t, w, h);
 }
 
 // Menu-bar commands are async so Tauri runs them off the main (window) thread.
@@ -966,6 +1005,41 @@ async fn delete_server(app: AppHandle, state: State<'_, AppState>, cf_token: Str
     *state.config.lock().unwrap() = cfg;
     refresh_tray(&app).await;
     Ok(())
+}
+
+/// The tracker's version ("1.2.0"), from `<bin> version`.
+fn tracker_version(bin: &std::path::Path) -> Option<Vec<u64>> {
+    let mut cmd = std::process::Command::new(bin);
+    cmd.arg("version").stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().ok()?;
+    let v: Vec<u64> = String::from_utf8_lossy(&out.stdout).trim().split('.').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    (v.len() == 3).then_some(v)
+}
+
+/// The hooks run the tracker installed in ~/.devicetally/bin, which only updated itself once a
+/// day: after an app update it could stay old for good (an old one records no agent status).
+/// At start, an installed tracker older than the one in the app is replaced by it.
+fn update_tracker() {
+    let name = if cfg!(windows) { "devicetally.exe" } else { "devicetally" };
+    let installed = agent_dir().join("bin").join(name);
+    let Ok(bundled) = std::env::current_exe().map(|e| e.with_file_name(name)) else { return };
+    if !installed.exists() || !bundled.exists() {
+        return;
+    }
+    let (Some(new), old) = (tracker_version(&bundled), tracker_version(&installed)) else { return };
+    if old.is_some_and(|o| o >= new) {
+        return;
+    }
+    // Copy beside it, then rename over it: a hook running right now keeps the old file.
+    let tmp = installed.with_extension("new");
+    if std::fs::copy(&bundled, &tmp).is_ok() && std::fs::rename(&tmp, &installed).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// Runs the bundled agent's `enroll`, then remembers this machine's device key.
@@ -1527,7 +1601,6 @@ pub fn run() {
                 sampler: Mutex::new(stats::Sampler::new()),
                 last_stats: Mutex::new(stats::Stats::default()),
                 tokens_today: Mutex::new(None),
-                last_icon: Mutex::new(vec![]),
                 activity_seen: Mutex::new(now_ms()),
                 seen_sessions: Mutex::new(None),
                 disk_alerted: Mutex::new(0),
@@ -1592,6 +1665,25 @@ pub fn run() {
                 #[cfg(target_os = "macos")]
                 notify_mac(&handle, "DeviceTally test", "Notifications work (self-test)", Some("Glass"), |r| eprintln!("selftest notification: {r}"));
             }
+            // Support check: DEVICETALLY_MENUBAR_SELFTEST=1 adds and removes menu-bar items 40 times
+            // from other threads (as Settings does) and reports whether the app stayed responsive.
+            if std::env::var("DEVICETALLY_MENUBAR_SELFTEST").is_ok() {
+                let h3 = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = h3.state::<AppState>();
+                    let orig = st.config.lock().unwrap().menubar.clone();
+                    let sets: [&[&str]; 4] = [&["agent", "net", "temp"], &["agent"], &["cpu", "mem", "disk", "clock"], &["net", "agent"]];
+                    let jobs: Vec<_> = (0..40).map(|i| { let h = h3.clone(); let items: Vec<String> = sets[i % 4].iter().map(|x| x.to_string()).collect(); let mut c = orig.clone(); c.items = items; c.combined = i % 7 == 0;
+                        tauri::async_runtime::spawn(async move { h.state::<AppState>().config.lock().unwrap().menubar = c; draw_menubar(&h); }) }).collect();
+                    for j in jobs { let _ = j.await; }
+                    st.config.lock().unwrap().menubar = orig;
+                    draw_menubar(&h3);
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = h3.run_on_main_thread(move || { let _ = tx.send(()); });
+                    eprintln!("selftest menubar: {}", if rx.recv_timeout(Duration::from_secs(5)).is_ok() { "responsive" } else { "FROZE" });
+                });
+            }
+            std::thread::spawn(update_tracker);
             // Today's tokens every 5 minutes; the menu-bar item (network, CPU, clock…) every 2 seconds.
             let h2 = handle.clone();
             tauri::async_runtime::spawn(async move {

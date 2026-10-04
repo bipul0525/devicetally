@@ -6,7 +6,7 @@ import type { ComponentChildren } from 'preact'
 import { Mark } from './brands'
 
 export type Stats = {
-  cpu: number; mem_used: number; mem_total: number; disk_free: number; disk_total: number; net_down: number; net_up: number
+  cpu: number; mem_used: number; mem_total: number; disk_free: number; disk_total: number; net_down: number; net_up: number; net_total_down: number; net_total_up: number
   battery: number | null; charging: boolean; cpu_temp: number | null; uptime: number
   net_iface: string; local_ip: string; battery_health: number | null; battery_cycles: number | null; battery_watts: number | null; battery_minutes: number | null
 }
@@ -16,6 +16,7 @@ type Session = { state: 'working' | 'waiting' | 'done'; since: number; project: 
 
 const gb = (b: number) => `${(b / 1e9).toFixed(b >= 100e9 ? 0 : 1)} GB`
 const mb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`)
+const gbs = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(b >= 100e9 ? 0 : 2)} GB` : `${Math.round(b / 1e6)} MB`)
 const rate = (b: number) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB/s` : b >= 1e3 ? `${Math.round(b / 1e3)} KB/s` : `${Math.round(b)} B/s`)
 const ago = (ts: number) => { const m = (Date.now() - ts) / 60000; return m < 1 ? 'just now' : m < 60 ? `${Math.round(m)} min ago` : `${Math.round(m / 60)} h ago` }
 const mins = (m: number) => (m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`)
@@ -55,7 +56,7 @@ function Spark({ values, max, color, label }: { values: number[]; max?: number; 
   )
 }
 
-const Row = ({ k, v }: { k: string; v: ComponentChildren }) => <div class="prow"><span>{k}</span><b class="num">{v}</b></div>
+const Row = ({ k, v }: { k: ComponentChildren; v: ComponentChildren }) => <div class="prow"><span>{k}</span><b class="num">{v}</b></div>
 const Bar = ({ pct, color }: { pct: number; color?: string }) => <div class="track"><div style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: color }} /></div>
 
 function Processes({ list, by }: { list: Proc[]; by: 'cpu' | 'mem' }) {
@@ -80,6 +81,10 @@ function NetPanel() {
     <div class="section"><h2>Connection</h2>
       <Row k="Interface" v={s.net_iface || '—'} />
       <Row k="Local IP" v={s.local_ip || '—'} />
+    </div>
+    <div class="section"><h2>Usage</h2>
+      <Row k={<><span class="dot-up" />Total upload</>} v={gbs(s.net_total_up)} />
+      <Row k={<><span class="dot-down" />Total download</>} v={gbs(s.net_total_down)} />
     </div>
   </>
 }

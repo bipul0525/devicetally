@@ -15,6 +15,8 @@ pub struct Stats {
     pub disk_total: u64,
     pub net_down: f64,     // bytes per second
     pub net_up: f64,
+    pub net_total_down: u64, // bytes since the computer started
+    pub net_total_up: u64,
     pub battery: Option<f32>, // percent
     pub charging: bool,
     pub cpu_temp: Option<f32>, // °C, hottest CPU sensor
@@ -105,7 +107,7 @@ impl Sampler {
         let secs = self.last.elapsed().as_secs_f64().max(0.5);
         self.last = Instant::now();
         // Physical interfaces only: loopback and virtual adapters would double-count.
-        let (mut down, mut up) = (0u64, 0u64);
+        let (mut down, mut up, mut tdown, mut tup) = (0u64, 0u64, 0u64, 0u64);
         let (mut iface, mut ip, mut busiest) = (String::new(), String::new(), 0u64);
         for (name, n) in &self.nets {
             let virtual_if = name.starts_with("lo") || name.starts_with("utun") || name.starts_with("awdl") || name.starts_with("llw")
@@ -113,6 +115,8 @@ impl Sampler {
             if !virtual_if {
                 down += n.received();
                 up += n.transmitted();
+                tdown += n.total_received();
+                tup += n.total_transmitted();
                 // The connection in use: the one with an IPv4 address that has carried the most.
                 if let Some(v4) = n.ip_networks().iter().find(|a| a.addr.is_ipv4()) {
                     let total = n.total_received() + n.total_transmitted();
@@ -136,6 +140,8 @@ impl Sampler {
             disk_total: root.map(|d| d.total_space()).unwrap_or(0),
             net_down: down as f64 / secs,
             net_up: up as f64 / secs,
+            net_total_down: tdown,
+            net_total_up: tup,
             battery: b.pct,
             charging: b.charging,
             cpu_temp: None,
