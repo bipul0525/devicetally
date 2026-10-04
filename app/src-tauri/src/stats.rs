@@ -19,19 +19,52 @@ pub struct Stats {
     pub charging: bool,
     pub cpu_temp: Option<f32>, // °C, hottest CPU sensor
     pub uptime: u64,           // seconds since boot
+    // Panels: the connection carrying the traffic, and battery details.
+    pub net_iface: String,
+    pub local_ip: String,
+    pub battery_health: Option<f32>, // percent of design capacity
+    pub battery_cycles: Option<u32>,
+    pub battery_watts: Option<f32>,
+    pub battery_minutes: Option<u32>, // to full while charging, to empty otherwise
+}
+
+/// One reading for the panels' graphs.
+#[derive(Serialize, Clone)]
+pub struct Point {
+    pub t: i64, // ms
+    pub cpu: f32,
+    pub down: f64,
+    pub up: f64,
+    pub mem: f32, // percent used
+    pub temp: Option<f32>,
+}
+
+impl Point {
+    pub fn from(s: &Stats, t: i64) -> Self {
+        Point { t, cpu: s.cpu, down: s.net_down, up: s.net_up, mem: if s.mem_total > 0 { s.mem_used as f32 * 100.0 / s.mem_total as f32 } else { 0.0 }, temp: s.cpu_temp }
+    }
+}
+
+/// A process using the most CPU or memory right now.
+#[derive(Serialize, Clone)]
+pub struct Proc {
+    pub name: String,
+    pub cpu: f32,
+    pub mem: u64,
 }
 
 pub struct Sampler {
     sys: System,
     nets: Networks,
     temps: Option<sysinfo::Components>, // read only when the menu bar shows the temperature
+    procs: Option<System>,              // only while a CPU or Memory panel is open
     last: Instant,
 }
 
 impl Sampler {
     pub fn new() -> Self {
         let sys = System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage()).with_memory(MemoryRefreshKind::nothing().with_ram()));
-        Sampler { sys, nets: Networks::new_with_refreshed_list(), temps: None, last: Instant::now() }
+        Sampler { sys, nets: Networks::new_with_refreshed_list(), temps: None, procs: None, last: Instant::now() }
     }
 
     /// CPU temperature: the hottest CPU die sensor (Apple Silicon "PMU tdie…", Intel/AMD "CPU…",
@@ -49,6 +82,22 @@ impl Sampler {
             .reduce(f32::max)
     }
 
+    /// The top processes by "cpu" or "mem". CPU shares need two readings, so the first call after
+    /// opening a panel shows memory only and CPU from the next refresh (2 s later).
+    pub fn top(&mut self, by: &str, n: usize) -> Vec<Proc> {
+        let sys = self.procs.get_or_insert_with(System::new);
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let cores = sys.cpus().len().max(1) as f32;
+        let mut list: Vec<Proc> = sys.processes().values().map(|p| Proc { name: p.name().to_string_lossy().into_owned(), cpu: p.cpu_usage() / cores, mem: p.memory() }).collect();
+        if by == "mem" {
+            list.sort_by(|a, b| b.mem.cmp(&a.mem));
+        } else {
+            list.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
+        }
+        list.truncate(n);
+        list
+    }
+
     pub fn sample(&mut self) -> Stats {
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
@@ -57,12 +106,20 @@ impl Sampler {
         self.last = Instant::now();
         // Physical interfaces only: loopback and virtual adapters would double-count.
         let (mut down, mut up) = (0u64, 0u64);
+        let (mut iface, mut ip, mut busiest) = (String::new(), String::new(), 0u64);
         for (name, n) in &self.nets {
             let virtual_if = name.starts_with("lo") || name.starts_with("utun") || name.starts_with("awdl") || name.starts_with("llw")
                 || name.starts_with("bridge") || name.starts_with("veth") || name.starts_with("docker") || name.contains("Loopback");
             if !virtual_if {
                 down += n.received();
                 up += n.transmitted();
+                // The connection in use: the one with an IPv4 address that has carried the most.
+                if let Some(v4) = n.ip_networks().iter().find(|a| a.addr.is_ipv4()) {
+                    let total = n.total_received() + n.total_transmitted();
+                    if total >= busiest {
+                        (busiest, iface, ip) = (total, name.clone(), v4.addr.to_string());
+                    }
+                }
             }
         }
         let disks = Disks::new_with_refreshed_list();
@@ -70,7 +127,7 @@ impl Sampler {
             let m = d.mount_point().to_string_lossy();
             m == "/" || m == "/System/Volumes/Data" || m.eq_ignore_ascii_case("C:\\")
         });
-        let (bat, charging) = battery();
+        let b = battery();
         Stats {
             cpu: self.sys.global_cpu_usage(),
             mem_used: self.sys.used_memory(),
@@ -79,19 +136,43 @@ impl Sampler {
             disk_total: root.map(|d| d.total_space()).unwrap_or(0),
             net_down: down as f64 / secs,
             net_up: up as f64 / secs,
-            battery: bat,
-            charging,
+            battery: b.pct,
+            charging: b.charging,
             cpu_temp: None,
             uptime: System::uptime(),
+            net_iface: iface,
+            local_ip: ip,
+            battery_health: b.health,
+            battery_cycles: b.cycles,
+            battery_watts: b.watts,
+            battery_minutes: b.minutes,
         }
     }
 }
 
-fn battery() -> (Option<f32>, bool) {
-    let Ok(m) = starship_battery::Manager::new() else { return (None, false) };
-    let Some(Ok(b)) = m.batteries().ok().and_then(|mut it| it.next()) else { return (None, false) };
-    let pct = b.state_of_charge().value * 100.0;
-    (Some(pct), matches!(b.state(), starship_battery::State::Charging | starship_battery::State::Full))
+#[derive(Default)]
+struct Battery {
+    pct: Option<f32>,
+    charging: bool,
+    health: Option<f32>,
+    cycles: Option<u32>,
+    watts: Option<f32>,
+    minutes: Option<u32>,
+}
+
+fn battery() -> Battery {
+    let Ok(m) = starship_battery::Manager::new() else { return Battery::default() };
+    let Some(Ok(b)) = m.batteries().ok().and_then(|mut it| it.next()) else { return Battery::default() };
+    let charging = matches!(b.state(), starship_battery::State::Charging | starship_battery::State::Full);
+    let time = if charging { b.time_to_full() } else { b.time_to_empty() };
+    Battery {
+        pct: Some(b.state_of_charge().value * 100.0),
+        charging,
+        health: Some(b.state_of_health().value * 100.0).filter(|h| *h > 0.0),
+        cycles: b.cycle_count(),
+        watts: Some(b.energy_rate().value).filter(|w| *w > 0.0),
+        minutes: time.map(|t| (t.value / 60.0).round() as u32).filter(|m| *m > 0 && *m < 24 * 60),
+    }
 }
 
 /// Short forms for the menu bar: "1.2M/s" style rates, "45%", "212G".

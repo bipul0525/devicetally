@@ -1006,7 +1006,7 @@ type ItemStyle = { label: '' | 'text' | 'icon' | 'inside' | 'none'; color: strin
 type ClockCfg = { hour12: boolean; ampm: boolean; weekday: boolean; day: boolean; month: boolean }
 type MenuBarCfg = { items: string[]; layout: 'row' | 'stacked' | 'top'; size: string; spacing: string; labels: boolean; net_stack: boolean; scale: number; gap: number
   gap_pt: number | null; weight: 'regular' | 'medium' | 'bold'; font: string; label_color: string; value_color: string
-  styles: Record<string, ItemStyle>; clock: ClockCfg; max_width: number; status_dot: boolean
+  styles: Record<string, ItemStyle>; clock: ClockCfg; max_width: number; status_dot: boolean; combined: boolean; ring_color: boolean
   alerts: { done_banner: boolean; done_sound: string; done_sound_on: boolean; wait_banner: boolean; wait_sound: string; wait_sound_on: boolean; min_seconds: number; disk: boolean } }
 /** One alert event: notification on/off, sound on/off, which sound (▶ to hear it), and a test. */
 function AlertRow({ title, hint, banner, soundOn, sound, onBanner, onSoundOn, onSound, test }: {
@@ -1165,6 +1165,8 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
           <Slider id={`sz-${k}`} label="Size" min={70} max={140} step={5} value={Math.round((st.scale || 1) * 100)} fmt={(v) => `${v}%`}
             live={(v) => live(with_({ scale: v / 100 }))} save={(v) => save(with_({ scale: v / 100 }))} reset={st.scale && st.scale !== 1 ? () => save(with_({ scale: 0 })) : undefined} />
           {k !== 'agent' && <div class="field"><span>{insideBattery ? 'Battery colour' : 'Number colour'}</span><ColorPick label="Number colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
+          {k === 'agent' && <div class="field"><label for="ringc">State colours<div class="hint" style={{ margin: 0 }}>Orange working, red needs you, green done. Off: the menu bar's own colour; the shapes still differ.</div></label>
+            <input id="ringc" type="checkbox" checked={cfg.ring_color} onChange={(e) => save({ ...cfg, ring_color: e.currentTarget.checked })} /></div>}
           {k === 'agent' && (st.label === 'text' || st.label === 'icon') && <div class="field"><span>Word colour</span><ColorPick label="Text colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
           {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field"><span>{k === 'clock' ? 'Icon colour' : 'Label colour'}</span><ColorPick label="Label colour" value={st.label_color} onChange={(v) => save(with_({ label_color: v }))} /></div>}
         </div>
@@ -1177,7 +1179,7 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
             <label><input type="checkbox" checked={c.month} onChange={(e) => clock({ month: e.currentTarget.checked })} /> Month (Oct)</label>
           </span></div>
         </div>}
-        {k === 'agent' && <p class="hint">The ring shows the state: an orange ring that turns while an agent works, a red ! when it needs you, a green ✓ when it's done (until you open DeviceTally from the menu bar), grey when idle. Notifications and sounds: <b>Alerts</b> on the left.</p>}
+        {k === 'agent' && <p class="hint">The ring shows the state: a ring that turns while an agent works, a ! when it needs you, a ✓ when it's done (until you open DeviceTally from the menu bar), a faint ring when idle. Click it in the menu bar to see each agent. Notifications and sounds: <b>Alerts</b> on the left.</p>}
         {k !== 'agent' && <p class="hint"><b>Auto</b> colour follows the menu bar: black in light mode, white in dark mode.{(k === 'battery' || k === 'clock') && " Using DeviceTally's? You can hide macOS's own in System Settings → Control Center."}</p>}
       </> : <p class="hint">Turn on "Show in menu bar" to add it. It goes at the end; move it from here.</p>}
     </div>
@@ -1190,12 +1192,14 @@ function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCf
     <div class="mb-pane">
       <div class="mb-pane-head"><div><h2 style={{ margin: 0 }}>General</h2><span class="hint" style={{ margin: 0 }}>For every item. Each item's own look is under its name.</span></div></div>
       <div class="group">
+        <div class="field"><label for="mbc">Combine into one item<div class="hint" style={{ margin: 0 }}>Off: each item is its own menu-bar item and opens its own panel (Network shows network, Battery shows battery). On: one item that opens everything.</div></label>
+          <input id="mbc" type="checkbox" checked={cfg.combined} onChange={(e) => save({ ...cfg, combined: e.currentTarget.checked })} /></div>
         <Slider id="mbs" label="Text size" min={70} max={130} step={5} value={Math.round(presetScale(cfg) * 100)} fmt={(v) => `${v}%`}
           live={(v) => live({ ...cfg, scale: v / 100 })} save={(v) => save({ ...cfg, scale: v / 100 })} />
         <Slider id="mbg" label="Spacing between items" min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`}
           live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
-        <Slider id="mbw" label="Maximum width" hint="macOS hides a menu-bar item that doesn't fit, so items at the end are left out instead." min={80} max={600} step={10} value={cfg.max_width || 360} fmt={(v) => `${v} pt`}
-          live={(v) => live({ ...cfg, max_width: v })} save={(v) => save({ ...cfg, max_width: v })} />
+        {cfg.combined && <Slider id="mbw" label="Maximum width" hint="macOS hides a menu-bar item that doesn't fit, so items at the end are left out instead." min={80} max={600} step={10} value={cfg.max_width || 360} fmt={(v) => `${v} pt`}
+          live={(v) => live({ ...cfg, max_width: v })} save={(v) => save({ ...cfg, max_width: v })} />}
         <div class="field"><span>Weight</span><Seg label="Weight" value={cfg.weight} options={[['regular', 'Regular'], ['medium', 'Medium'], ['bold', 'Bold']] as const} onChange={(v) => save({ ...cfg, weight: v })} /></div>
         <div class="field"><label for="mbf">Font</label>
           <select id="mbf" value={cfg.font} onChange={(e) => save({ ...cfg, font: e.currentTarget.value })}>
@@ -1387,11 +1391,13 @@ function StorageTab() {
   const [disk, setDisk] = useState<{ free: number; total: number } | null>(null)
   const [copied, setCopied] = useState('')
   const [trashing, setTrashing] = useState('')
+  // Desktop, Documents and Downloads: macOS asks once for each, so only when the person opts in.
+  const [personal, setPersonal] = useState(() => { try { return localStorage.getItem('dt-scan-personal') === '1' } catch { return false } })
   const [moved, setMoved] = useState('')
   useEffect(() => { invoke<{ disk_free: number; disk_total: number }>('system_stats').then((s) => setDisk({ free: s.disk_free, total: s.disk_total }), () => {}) }, [])
   const run = async () => {
     setBusy(true); setErr('')
-    try { lastScan = { at: Date.now(), items: await invoke<StorageItem[]>('storage_scan') }; setScan(lastScan) } catch (x) { setErr(String(x)) } finally { setBusy(false) }
+    try { lastScan = { at: Date.now(), items: await invoke<StorageItem[]>('storage_scan', { personal }) }; setScan(lastScan) } catch (x) { setErr(String(x)) } finally { setBusy(false) }
   }
   const used = disk && disk.total ? (disk.total - disk.free) / disk.total : 0
   const groups = ['AI tools', 'Developer caches', 'Biggest folders']
@@ -1407,6 +1413,10 @@ function StorageTab() {
         <button class="btn primary" disabled={busy} onClick={run}>{busy ? 'Scanning… (up to a minute)' : scan ? 'Scan again' : 'Scan this computer'}</button>
         <span class="hint" style={{ margin: 0 }}>{scan ? `Scanned ${ago(scan.at)}` : 'Finds what AI tools, developer caches and big folders take up.'}</span>
       </div>
+      <label class="hint" style={{ display: 'flex', gap: 6, alignItems: 'center', margin: '0 0 10px' }}>
+        <input type="checkbox" checked={personal} onChange={(e) => { const v = e.currentTarget.checked; setPersonal(v); try { localStorage.setItem('dt-scan-personal', v ? '1' : '0') } catch { /* fine */ } }} />
+        Include Desktop, Documents and Downloads (macOS asks once for each). Other apps' private data is never scanned, so macOS doesn't ask about it.
+      </label>
       {err && <p class="err" role="alert">{err}</p>}
       {moved && <div class="banner" role="status"><span>✓ "{moved}" is in the Bin. Empty the Bin to free the space (or put it back from there).</span><button class="btn" onClick={() => setMoved('')}>OK</button></div>}
       {scan && groups.map((g) => {

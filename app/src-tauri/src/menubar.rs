@@ -35,6 +35,10 @@ pub struct MenuBar {
     /// Agent status dot (working / needs you / done), and alerts when that changes.
     pub status_dot: bool,
     pub alerts: Alerts,
+    /// All items in one menu-bar item (one popover), instead of one menu-bar item each.
+    pub combined: bool,
+    /// Agent status ring in state colours (orange, red, green) instead of the menu bar's colour.
+    pub ring_color: bool,
 }
 
 /// Banners and sounds for agent status, each event on its own. Sound "" = none, else a macOS
@@ -129,8 +133,9 @@ impl MenuBar {
 impl Default for MenuBar {
     fn default() -> Self {
         MenuBar {
-            items: vec!["agent".into(), "tokens".into()], layout: "row".into(), size: "small".into(), spacing: "normal".into(), labels: true, net_stack: true, scale: 0.0, gap: 0.0,
-            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(),
+            // First launch: three items, normal size and spacing, the menu bar's own colour.
+            items: vec!["agent".into(), "net".into(), "temp".into()], layout: "row".into(), size: "small".into(), spacing: "normal".into(), labels: true, net_stack: true, scale: 1.2, gap: 0.0,
+            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(), combined: false, ring_color: false,
         }
     }
 }
@@ -149,7 +154,7 @@ pub enum Icon {
     BatteryIn(f32, bool), // battery with the percentage inside (charge 0..1, charging)
     /// Agent status: a ring (working, turning with `phase` 0..7), a red "!" (needs you), a green ✓
     /// (done) or a grey ring (idle). Drawn in its own colours.
-    AgentRing(Agent, u8),
+    AgentRing(Agent, u8, Option<[u8; 3]>), // colour None = the menu bar's own colour (shapes only)
 }
 
 /// What coding agents are doing on this computer, most urgent first.
@@ -251,7 +256,14 @@ pub fn units(cfg: &MenuBar, v: &Values) -> Vec<Unit> {
                 let unit = |icon, value: String| Unit { kind: "agent", label: String::new(), icon: Some(icon), value, template: String::new(), scale, color: vc, label_color: lc, layout: "row".into() };
                 // "text" (or the older "icon"): the ring and a short word; otherwise the ring alone.
                 let word = matches!(st.label.as_str(), "text" | "icon");
-                out.push(unit(Icon::AgentRing(a, v.tick % 8), if word { if n > 1 { format!("{} {n}", a.word()) } else { a.word().into() } } else { String::new() }));
+                // State colours are optional; by default the ring uses the menu bar's own colour and
+                // the shapes alone tell the states apart (turning ring, !, ✓).
+                let own = cfg.ring_color.then(|| a.rgb());
+                let mut u = unit(Icon::AgentRing(a, v.tick % 8, own), if word { if n > 1 { format!("{} {n}", a.word()) } else { a.word().into() } } else { String::new() });
+                if u.color.is_none() {
+                    u.color = own;
+                }
+                out.push(u);
             }
             "battery" if st.label == "inside" => {
                 if let Some(b) = s.battery {
@@ -457,8 +469,8 @@ impl Canvas<'_> {
         if let Icon::BatteryIn(level, charging) = icon {
             return self.battery_in(level, charging, x, bottom, h, rgb);
         }
-        if let Icon::AgentRing(a, phase) = icon {
-            return self.agent_ring(a, phase, x, bottom, h);
+        if let Icon::AgentRing(a, phase, own) = icon {
+            return self.agent_ring(a, phase, x, bottom, h, own.unwrap_or(rgb), own.is_none());
         }
         if let Icon::Dot(own) = icon {
             let (r, cx, cy) = (h * 0.35, x + h * 0.35, bottom - h / 2.0);
@@ -656,15 +668,15 @@ impl Canvas<'_> {
     }
 
     /// The agent status ring, `h` px high (a little taller than digits, so it reads at a glance).
-    fn agent_ring(&mut self, a: Agent, phase: u8, x: f32, bottom: f32, h: f32) {
+    #[allow(clippy::too_many_arguments)]
+    fn agent_ring(&mut self, a: Agent, phase: u8, x: f32, bottom: f32, h: f32, col: [u8; 3], mono: bool) {
         let d = (h * 1.15).round();
         let (cx, cy, r) = (x + d / 2.0, bottom - h / 2.0, d / 2.0);
         let t = (d * 0.17).max(2.2);
-        let col = a.rgb();
         let bx = (cx - r - 1.0, cy - r - 1.0, cx + r + 1.0, cy + r + 1.0);
         let dist = move |px: f32, py: f32| ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
         match a {
-            Agent::Idle => self.fill(bx, col, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0),
+            Agent::Idle => self.fill_alpha(bx, col, if mono { 0.55 } else { 1.0 }, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0),
             Agent::Working => {
                 // A faint full ring, and a bright 3/4 arc whose gap turns a step each redraw.
                 let faint = [col[0], col[1], col[2]];
@@ -701,10 +713,24 @@ impl Canvas<'_> {
                                 }
                             }
                         }
-                        self.blend(px, py, (n * 255 / 16) as u8, [255, 255, 255]);
+                        let cov = (n * 255 / 16) as u8;
+                        if mono {
+                            // Shapes only: the mark is cut out of the disc, so the menu bar shows through.
+                            self.knock(px, py, cov);
+                        } else {
+                            self.blend(px, py, cov, [255, 255, 255]);
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /// Removes coverage (cuts a shape out of what's drawn).
+    fn knock(&mut self, x: i32, y: i32, cov: u8) {
+        if x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height && cov > 0 {
+            let i = (y as usize * self.width + x as usize) * 4 + 3;
+            self.rgba[i] = (self.rgba[i] as u32 * (255 - cov as u32) / 255) as u8;
         }
     }
 
@@ -869,6 +895,14 @@ mod tests {
     }
 
     #[test]
+    fn first_launch_is_three_plain_items() {
+        let d = MenuBar::default();
+        assert_eq!(d.items, ["agent", "net", "temp"]);
+        assert!(!d.combined && !d.ring_color && !d.colored(), "separate items, menu-bar colour only");
+        assert!(d.scale() >= 1.2, "normal size, not tiny");
+    }
+
+    #[test]
     fn colors_parse() {
         assert_eq!(rgb("#33c759"), Some([0x33, 0xc7, 0x59]));
         assert_eq!(rgb(""), None);
@@ -959,7 +993,7 @@ mod tests {
         assert!(width(&gap(0.0), &busy) < width(&gap(1.0), &busy), "spacing can go down to 0");
         let weight = |s: &str| MenuBar { items: vec!["cpu".into()], weight: s.into(), ..Default::default() };
         assert!(width(&weight("bold"), &busy) > width(&weight("regular"), &busy));
-        let size = |s: &str| MenuBar { items: vec!["tokens".into()], size: s.into(), ..Default::default() };
+        let size = |s: &str| MenuBar { items: vec!["tokens".into()], size: s.into(), scale: 0.0, ..Default::default() };
         assert!(width(&size("tiny"), &busy) < width(&size("small"), &busy) && width(&size("small"), &busy) < width(&size("normal"), &busy));
         let mut big = MenuBar { items: vec!["cpu".into()], ..Default::default() };
         let normal_w = width(&big, &busy);

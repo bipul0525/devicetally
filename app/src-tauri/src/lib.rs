@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_positioner::{Position, WindowExt};
 
 const TRAY_ID: &str = "main";
@@ -56,6 +56,13 @@ struct AppState {
     // counters are still read at most every 2 s.
     animating: std::sync::atomic::AtomicBool,
     last_sample: Mutex<Option<std::time::Instant>>,
+    // Separate menu-bar items (one per module, macOS): which exist, in order, and their last images.
+    tray_items: Mutex<Vec<String>>,
+    item_icons: Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    // Which panel the popover shows ("all" for the combined item).
+    panel: Mutex<String>,
+    // Recent readings for the panels' graphs (about 3 minutes).
+    history: Mutex<std::collections::VecDeque<stats::Point>>,
 }
 
 impl AppState {
@@ -240,9 +247,10 @@ fn disk_check(app: &AppHandle) {
 
 /// Storage on this computer (read-only), for the Storage tab.
 #[tauri::command]
-async fn storage_scan() -> Result<Vec<storage::Item>, String> {
+async fn storage_scan(personal: Option<bool>) -> Result<Vec<storage::Item>, String> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    tokio::task::spawn_blocking(move || storage::scan(&home)).await.map_err(|e| e.to_string())
+    let personal = personal.unwrap_or(false);
+    tokio::task::spawn_blocking(move || storage::scan(&home, personal)).await.map_err(|e| e.to_string())
 }
 
 /// Moves a cache folder to the Bin (recoverable until the Bin is emptied). Only what
@@ -489,6 +497,7 @@ fn draw_menubar(app: &AppHandle) {
                 s.cpu_temp = sampler.cpu_temp();
             }
             *state.last_stats.lock().unwrap() = s.clone();
+            record(&state, &s);
             s
         } else {
             Default::default()
@@ -510,6 +519,37 @@ fn draw_menubar(app: &AppHandle) {
     }
     if let Some(d) = dot {
         units.insert(0, menubar::status_unit(d.rgb()));
+    }
+    // Separate items (macOS): one menu-bar item per module, each opening its own panel.
+    let separate = cfg!(target_os = "macos") && !cfg.combined && !cfg.items.is_empty();
+    sync_trays(app, if separate { &cfg.items } else { &[] });
+    let _ = tray.set_visible(!separate);
+    #[cfg(target_os = "macos")]
+    if separate {
+        let mut icons = state.item_icons.lock().unwrap();
+        for item in &cfg.items {
+            let Some(t) = app.tray_by_id(&format!("mb-{item}")) else { continue };
+            let one = menubar::MenuBar { items: vec![item.clone()], ..cfg.clone() };
+            let u = menubar::units(&one, &values);
+            let colored = one.colored() || u.iter().any(|x| x.color.is_some());
+            let fg = if colored && dark_mode() { [255, 255, 255] } else { [0, 0, 0] };
+            match menubar::render(&one, &u, fg) {
+                Some((rgba, w, h)) => {
+                    let _ = t.set_visible(true);
+                    let _ = t.set_tooltip(Some(format!("DeviceTally: {}", menubar::text(&u))));
+                    if icons.get(item) != Some(&rgba) {
+                        let _ = t.set_icon(Some(tauri::image::Image::new_owned(rgba.clone(), w, h)));
+                        let _ = t.set_icon_as_template(!colored);
+                        icons.insert(item.clone(), rgba);
+                    }
+                }
+                // Nothing to show (e.g. no temperature sensor, no battery): hide that item.
+                None => {
+                    let _ = t.set_visible(false);
+                }
+            }
+        }
+        return;
     }
     let _ = tray.set_tooltip(Some(if units.is_empty() { "DeviceTally".to_string() } else { format!("DeviceTally: {}", menubar::text(&units)) }));
     #[cfg(target_os = "macos")]
@@ -602,6 +642,8 @@ async fn system_stats(state: State<'_, AppState>) -> Result<stats::Stats, String
     let mut sampler = state.sampler.lock().unwrap();
     let mut s = sampler.sample();
     s.cpu_temp = sampler.cpu_temp();
+    drop(sampler);
+    record(&state, &s);
     *state.last_stats.lock().unwrap() = s.clone();
     Ok(s)
 }
@@ -1158,16 +1200,34 @@ fn show_main(app: &AppHandle, tab: &str) -> tauri::Result<()> {
     }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.eval(&format!("window.dispatchEvent(new CustomEvent('dt:tab', {{ detail: '{tab}' }}))"));
+        #[cfg(target_os = "macos")]
+        follow_desktop(&w);
         w.show()?;
         return w.set_focus();
     }
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::App(format!("index.html?view=main&tab={tab}").into()))
+    let w = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(format!("index.html?view=main&tab={tab}").into()))
         .title("DeviceTally")
         .inner_size(720.0, 560.0)
         .min_inner_size(600.0, 460.0)
         .center()
         .build()?;
+    #[cfg(target_os = "macos")]
+    follow_desktop(&w);
     Ok(())
+}
+
+/// macOS: the main window opens on the desktop (Space) you're on, instead of switching you back to
+/// the one where it was opened before.
+#[cfg(target_os = "macos")]
+fn follow_desktop(w: &tauri::WebviewWindow) {
+    let w2 = w.clone();
+    let _ = w.run_on_main_thread(move || {
+        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+        let Ok(ptr) = w2.ns_window() else { return };
+        // SAFETY: the live NSWindow of this webview window, used on the main thread.
+        let win = unsafe { &*(ptr as *const NSWindow) };
+        win.setCollectionBehavior(win.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace);
+    });
 }
 
 // The popover as a macOS panel that can take keyboard focus (a borderless panel can't by default).
@@ -1209,12 +1269,124 @@ fn float_everywhere(w: &tauri::WebviewWindow) {
     win.setHidesOnDeactivate(false);
 }
 
-fn toggle_popover(app: &AppHandle) {
+/// Keeps one menu-bar item per module in `want`, in order (macOS adds new items to the left, so
+/// they're created right to left). Recreated only when the list changes.
+fn sync_trays(app: &AppHandle, want: &[String]) {
+    let state = app.state::<AppState>();
+    let mut have = state.tray_items.lock().unwrap();
+    if have.as_slice() == want {
+        return;
+    }
+    for k in have.iter() {
+        let _ = app.remove_tray_by_id(&format!("mb-{k}"));
+    }
+    state.item_icons.lock().unwrap().clear();
+    have.clear();
+    for k in want.iter().rev() {
+        let id = format!("mb-{k}");
+        let panel = k.clone();
+        let Ok(menu) = tray_menu(app) else { continue };
+        let built = TrayIconBuilder::with_id(&id)
+            .icon(tauri::image::Image::new_owned(vec![0; 4 * 4 * 4], 4, 4))
+            .icon_as_template(true)
+            .menu(&menu)
+            .show_menu_on_left_click(false)
+            .on_tray_icon_event(move |tray, event| {
+                tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+                if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                    toggle_popover(tray.app_handle(), &panel);
+                }
+            })
+            .on_menu_event(on_tray_menu)
+            .build(app);
+        if built.is_ok() {
+            have.insert(0, k.clone());
+        }
+    }
+}
+
+fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let open = MenuItem::with_id(app, "dashboard", "Open DeviceTally", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit DeviceTally", true, None::<&str>)?;
+    Menu::with_items(app, &[&open, &settings, &PredefinedMenuItem::separator(app)?, &quit])
+}
+
+fn on_tray_menu(app: &AppHandle, e: tauri::menu::MenuEvent) {
+    match e.id.as_ref() {
+        "dashboard" => {
+            let _ = show_main(app, "overview");
+        }
+        "settings" => {
+            let _ = show_main_settings(app);
+        }
+        "quit" => app.exit(0),
+        _ => {}
+    }
+}
+
+/// Keeps the last ~3 minutes of readings (one every 2 s) for the panels' graphs.
+fn record(state: &AppState, s: &stats::Stats) {
+    let mut h = state.history.lock().unwrap();
+    // The menu bar and an open panel may both read; keep one point per ~2 s.
+    if h.back().is_some_and(|p| now_ms() - p.t < 1500) {
+        return;
+    }
+    h.push_back(stats::Point::from(s, now_ms()));
+    while h.len() > 90 {
+        h.pop_front();
+    }
+}
+
+/// Opens the main window on a tab (e.g. a panel's "What's using space?" → Storage).
+#[tauri::command]
+fn open_tab(app: AppHandle, tab: String) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("popover") {
+        let _ = w.hide();
+    }
+    let tab = if ["overview", "sessions", "devices", "menubar", "storage", "settings"].contains(&tab.as_str()) { tab } else { "overview".into() };
+    show_main(&app, &tab).map_err(|e| e.to_string())
+}
+
+/// Top processes for the CPU ("cpu") or Memory ("mem") panel.
+#[tauri::command]
+async fn top_processes(state: State<'_, AppState>, by: String) -> Result<Vec<stats::Proc>, String> {
+    Ok(state.sampler.lock().unwrap().top(&by, 5))
+}
+
+/// Recent readings for a panel's graph.
+#[tauri::command]
+async fn stats_history(state: State<'_, AppState>) -> Result<Vec<stats::Point>, String> {
+    Ok(state.history.lock().unwrap().iter().cloned().collect())
+}
+
+/// The panel to show when the popover opens ("all", or one module such as "net").
+#[tauri::command]
+async fn current_panel(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.panel.lock().unwrap().clone())
+}
+
+/// Popover height per panel: the full summary is tall, a module's panel shorter.
+fn panel_height(panel: &str) -> f64 {
+    match panel {
+        "all" | "tokens" => 600.0,
+        "agent" | "clock" => 380.0,
+        "disk" => 340.0,
+        _ => 460.0,
+    }
+}
+
+fn toggle_popover(app: &AppHandle, panel: &str) {
     let Some(w) = app.get_webview_window("popover") else { return };
-    if w.is_visible().unwrap_or(false) {
+    let state = app.state::<AppState>();
+    let same = *state.panel.lock().unwrap() == panel;
+    if w.is_visible().unwrap_or(false) && same {
         let _ = w.hide();
     } else {
-        *app.state::<AppState>().activity_seen.lock().unwrap() = now_ms();
+        *state.activity_seen.lock().unwrap() = now_ms();
+        *state.panel.lock().unwrap() = panel.to_string();
+        let _ = w.emit("dt:panel", panel.to_string());
+        let _ = w.set_size(tauri::LogicalSize::new(340.0, panel_height(panel)));
         let _ = w.move_window(Position::TrayCenter);
         let _ = w.show();
         // macOS: the panel takes focus itself; activating the app would leave the full-screen space.
@@ -1231,7 +1403,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
-        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_menubar_live, menubar_preview, system_stats, activity, test_alert, preview_sound, list_sounds, storage_scan, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
+        .invoke_handler(tauri::generate_handler![status, sign_in, sign_out, summary, add_this_device, connect_with_code, api, save_export, create_admin, create_server, update_server, delete_server, bundled_server_version, disconnect_this_computer, servers, switch_server, get_menubar, set_menubar, set_menubar_live, menubar_preview, system_stats, stats_history, current_panel, top_processes, open_tab, activity, test_alert, preview_sound, list_sounds, storage_scan, reveal_path, trash_path, lock_status, lock_computer, unlock_computer, open_dashboard, open_settings, quit])
         .setup(|app| {
             // A menu-bar utility: no Dock icon, no app switcher entry.
             #[cfg(target_os = "macos")]
@@ -1253,6 +1425,10 @@ pub fn run() {
                 disk_alerted: Mutex::new(0),
                 animating: std::sync::atomic::AtomicBool::new(false),
                 last_sample: Mutex::new(None),
+                tray_items: Mutex::new(vec![]),
+                item_icons: Mutex::new(Default::default()),
+                panel: Mutex::new("all".into()),
+                history: Mutex::new(Default::default()),
             });
 
             let open = MenuItem::with_id(app, "dashboard", "Open DeviceTally", true, None::<&str>)?;
@@ -1275,19 +1451,10 @@ pub fn run() {
                 .on_tray_icon_event(|tray, event| {
                     tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                        toggle_popover(tray.app_handle());
+                        toggle_popover(tray.app_handle(), "all");
                     }
                 })
-                .on_menu_event(|app, e| match e.id.as_ref() {
-                    "dashboard" => {
-                        let _ = show_main(app, "overview");
-                    }
-                    "settings" => {
-                        let _ = show_main_settings(app);
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
+                .on_menu_event(on_tray_menu)
                 .build(app)?;
 
             // The popover closes when it loses focus, like a system popover.

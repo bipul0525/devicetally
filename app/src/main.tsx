@@ -6,6 +6,8 @@ import './styles.css'
 import { AppTitle, MainWindow } from './window'
 import { Mark, modelName } from './brands'
 import { UpdateNote } from './updates'
+import { listen } from '@tauri-apps/api/event'
+import { ModulePanel, PANEL_TITLE } from './panels'
 
 type Summary = {
   scope: 'all' | 'device'
@@ -109,6 +111,13 @@ function ThisComputer() {
 }
 
 function Popover() {
+  // Which menu-bar item was clicked: one module's panel, "tokens", or "all" (combined item).
+  const [panel, setPanel] = useState('all')
+  useEffect(() => {
+    invoke<string>('current_panel').then(setPanel, () => {})
+    const un = listen<string>('dt:panel', (e) => setPanel(e.payload))
+    return () => { un.then((f) => f()) }
+  }, [])
   const [range, setRange] = useState<(typeof RANGES)[number][0]>('today')
   const [data, setData] = useState<Summary | null>(null)
   const [error, setError] = useState('')
@@ -140,6 +149,15 @@ function Popover() {
     </div>
   )
   const header = <header class="pop-head">{brand}</header>
+
+  if (PANEL_TITLE[panel]) {
+    return (
+      <div class="pop">
+        <header class="pop-head">{brand}<h1 class="panel-title">{PANEL_TITLE[panel]}</h1></header>
+        <div class="pop-body"><ModulePanel panel={panel} /></div>
+      </div>
+    )
+  }
 
   if (error === 'signed_out' || error === 'not_set_up' || error === 'device_revoked') {
     return (
@@ -224,8 +242,7 @@ function Popover() {
           </div>}
         </>
       )}
-      <ClaudeNow />
-      <ThisComputer />
+      {panel === 'all' && <><ClaudeNow /><ThisComputer /></>}
       <UpdateNote open={() => invoke('open_settings')} />
       <p class="note">Updates every 30 s</p>
       </div>

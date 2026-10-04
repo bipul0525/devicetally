@@ -63,7 +63,6 @@ const KNOWN: &[(&str, &str, &str, &str, &str)] = &[
     ("Developer caches", "Gradle", ".gradle/caches", "Gradle dependencies and build cache.", "safe"),
     ("Developer caches", "Maven", ".m2/repository", "Downloaded Maven dependencies.", "safe"),
     ("Developer caches", "Android emulators", ".android/avd", "Android virtual devices.", "caution"),
-    ("Developer caches", "Docker", "Library/Containers/com.docker.docker", "Docker images, containers and volumes. Volumes may hold your data.", "risky"),
     ("Developer caches", "Flutter / Dart", ".pub-cache", "Downloaded Dart packages.", "safe"),
     ("Developer caches", "JetBrains caches", "Library/Caches/JetBrains", "IDE indexes and caches.", "safe"),
     ("Developer caches", "Playwright browsers", "Library/Caches/ms-playwright", "Test browsers. Re-installed with playwright install.", "safe"),
@@ -89,7 +88,28 @@ fn sizes(paths: Vec<PathBuf>) -> Vec<Option<u64>> {
 
 /// Scans `home`: known AI and developer locations, then the biggest folders directly in it and in
 /// ~/Library. Takes from seconds to a minute or two on a full disk; run off the UI thread.
-pub fn scan(home: &Path) -> Vec<Item> {
+/// Folders macOS guards with a permission prompt (other apps' data, Mail, Messages, Safari, Photos
+/// and so on). Reading their size makes macOS ask once per app, so the scan never enters them.
+const PROTECTED: &[&str] = &[
+    "Library/Containers", "Library/Group Containers", "Library/Daemon Containers", "Library/Mail", "Library/Messages",
+    "Library/Safari", "Library/Calendars", "Library/Reminders", "Library/HomeKit", "Library/Cookies", "Library/Biome",
+    "Library/Accounts", "Library/Suggestions", "Library/Metadata", "Library/IdentityServices", "Library/PersonalizationPortrait",
+    "Library/Mobile Documents", "Library/CloudStorage", "Library/Application Support/AddressBook", "Library/Application Support/CallHistoryDB",
+    "Library/Application Support/Knowledge", "Library/Application Support/MobileSync", "Library/Application Support/FileProvider",
+    "Pictures", "Music", "Movies", ".Trash",
+];
+
+/// Personal folders macOS asks about once each (Files and Folders); scanned only when asked.
+const PERSONAL: &[&str] = &["Desktop", "Documents", "Downloads"];
+
+fn skipped(home: &Path, p: &Path, personal: bool) -> bool {
+    let Ok(rel) = p.strip_prefix(home) else { return true };
+    let rel = rel.to_string_lossy();
+    let apple = rel.starts_with("Library/Application Support/com.apple.") || rel.starts_with("Library/Caches/com.apple.");
+    apple || PROTECTED.iter().any(|x| rel == *x) || (!personal && PERSONAL.iter().any(|x| rel == *x))
+}
+
+pub fn scan(home: &Path, personal: bool) -> Vec<Item> {
     let mut out = vec![];
     let known: Vec<PathBuf> = KNOWN.iter().map(|k| home.join(k.2)).collect();
     for (k, bytes) in KNOWN.iter().zip(sizes(known.clone())) {
@@ -104,7 +124,7 @@ pub fn scan(home: &Path) -> Vec<Item> {
         for e in std::fs::read_dir(&base).into_iter().flatten().flatten() {
             let p = e.path();
             let is_dir = e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink());
-            if is_dir && p != home.join("Library") && p != home.join("Library/Caches") && p != home.join("Library/Application Support") {
+            if is_dir && p != home.join("Library") && p != home.join("Library/Caches") && p != home.join("Library/Application Support") && !skipped(home, &p, personal) {
                 dirs.push(p);
             }
         }
@@ -135,7 +155,7 @@ mod tests {
         let npm = home.join(".npm/_cacache");
         std::fs::create_dir_all(&npm).unwrap();
         std::fs::write(npm.join("blob"), vec![1u8; 3 << 20]).unwrap();
-        let items = scan(&home);
+        let items = scan(&home, false);
         let n = items.iter().find(|i| i.name == "npm cache").expect("npm cache found");
         assert!(n.bytes >= 3 << 20 && n.risk == "safe" && n.path.ends_with(".npm/_cacache"));
         assert!(npm.join("blob").exists(), "read-only: nothing deleted");
@@ -148,7 +168,7 @@ mod tests {
     #[ignore]
     fn real_scan() {
         let t = std::time::Instant::now();
-        let items = scan(Path::new(&std::env::var("HOME").unwrap()));
+        let items = scan(Path::new(&std::env::var("HOME").unwrap()), false);
         for i in &items {
             println!("{:<17} {:>8.1} GB  {:<8} {}", i.group, i.bytes as f64 / 1e9, i.risk, i.name);
         }
@@ -182,6 +202,18 @@ mod tests {
         let url = NSURL::fileURLWithPath(&NSString::from_str(&p.to_string_lossy()));
         NSFileManager::defaultManager().trashItemAtURL_resultingItemURL_error(&url, None).expect("moved to the Bin");
         assert!(!p.exists(), "moved out of Caches (macOS doesn't let a terminal list the Bin to check further)");
+    }
+
+    #[test]
+    fn never_enters_folders_macos_asks_about() {
+        let home = Path::new("/Users/x");
+        assert!(skipped(home, &home.join("Library/Containers"), true));
+        assert!(skipped(home, &home.join("Library/Group Containers"), true));
+        assert!(skipped(home, &home.join("Library/Application Support/com.apple.sharedfilelist"), true));
+        assert!(skipped(home, &home.join("Desktop"), false), "personal folders only when asked");
+        assert!(!skipped(home, &home.join("Desktop"), true));
+        assert!(!skipped(home, &home.join("Library/Caches/Google"), false));
+        assert!(!skipped(home, &home.join(".npm"), false));
     }
 
     #[test]

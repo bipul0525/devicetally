@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0
+
+- **A menu-bar item per module, like Stats:** Agent status, Network, CPU, Memory, Disk, Battery and Clock are separate items, and each opens its own panel over any app: Network shows speeds with live graphs and your connection; CPU shows usage, temperature and top processes; Memory, Disk (with "What's using space?"), Battery (health, cycles, time left), Clock (calendar) and Agents. **Combine into one item** (Menu bar → General) brings back a single item with everything.
+- **First launch is simple:** three items (Agent status, Network, CPU temperature) at a normal size, in the menu bar's own colour. The agent ring tells its states apart by shape; state colours are a switch away.
+- **Open DeviceTally comes to the desktop you're on** instead of switching you back to the one where it was opened before.
+- Delete DeviceTally button: cleaner label.
+- **Storage scan no longer triggers macOS permission pop-ups:** it skips other apps' private data (Containers, Mail, Messages, Safari…). Desktop, Documents and Downloads are included only if you tick the box (macOS asks once for each). Faster too.
+
 ## 1.0.3
 
 - Joining a computer just says "✓ <name> is connected. Monitoring is on."

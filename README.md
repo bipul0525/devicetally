@@ -53,7 +53,7 @@ Tokens and API-equivalent cost by **tool, model, project and computer**, with a 
 <td width="50%" valign="top">
 
 ### A menu bar you design
-Agent status, tokens today, network ↑↓, CPU, CPU temperature, memory, disk, **battery with the percentage inside**, clock. Each item gets its own label (text, Apple SF Symbols icon or none), layout, size and colour. 12 fonts, a live preview, and sliders that move the real menu bar.
+Agent status, tokens today, network ↑↓, CPU, CPU temperature, memory, disk, **battery with the percentage inside**, clock, each as **its own menu-bar item with its own panel** (live graphs, top processes, battery health, a calendar), or all combined into one. Each item gets its own label (text, Apple SF Symbols icon or none), layout, size and colour. 12 fonts, a live preview, and sliders that move the real menu bar.
 
 </td>
 </tr>
@@ -71,7 +71,7 @@ Every computer shows **Online / Idle / Offline**, whether it's 🔒 locked, trac
 <td valign="top">
 
 ### Storage
-What AI tools (Ollama models, Hugging Face, Claude Code, Cursor…), developer caches (Xcode, npm, Docker, Cargo…) and big folders use: a Safe / Caution / Risky label, **Show in Finder**, and **Move to Bin** for caches. Alerts at 80% and 90% full.
+What AI tools (Ollama models, Hugging Face, Claude Code, Cursor…), developer caches (Xcode, npm, Cargo, Go…) and big folders use: a Safe / Caution / Risky label, **Show in Finder**, and **Move to Bin** for caches. Alerts at 80% and 90% full.
 
 </td>
 </tr>
