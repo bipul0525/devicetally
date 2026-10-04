@@ -107,7 +107,7 @@ impl Clock {
 impl MenuBar {
     pub fn scale(&self) -> f32 {
         if self.scale > 0.0 {
-            return self.scale.clamp(0.7, 1.3);
+            return self.scale.clamp(0.5, 2.0);
         }
         match self.size.as_str() { "tiny" => 0.85, "normal" => 1.2, _ => 1.0 }
     }
@@ -215,7 +215,7 @@ pub fn units(cfg: &MenuBar, v: &Values) -> Vec<Unit> {
         let mode = match st.label.as_str() { "text" | "icon" | "none" => st.label.as_str(), _ => if cfg.labels { "text" } else { "none" } };
         let vc = rgb(&st.color).or(rgb(&cfg.value_color));
         let lc = rgb(&st.label_color).or(rgb(&cfg.label_color));
-        let scale = if st.scale > 0.0 { st.scale.clamp(0.7, 1.4) } else { 1.0 };
+        let scale = if st.scale > 0.0 { st.scale.clamp(0.5, 2.0) } else { 1.0 };
         let layout = match st.layout.as_str() { "row" | "stacked" | "top" => st.layout.clone(), _ => cfg.layout.clone() };
         let top = layout == "top"; // label on top has room for whole words
         let mut push = |kind: &'static str, short: &str, full: &str, icon: Option<Icon>, value: String, template: &str| {
@@ -359,7 +359,7 @@ fn icon_w(icon: Icon, h: f32) -> f32 {
         Icon::Disk => h * 1.15,
         Icon::Dot(_) => h * 0.7,
         Icon::BatteryIn(..) => h * 2.4,
-        Icon::AgentRing(..) => h * 1.15,
+        Icon::AgentRing(..) => h * 1.25,
         _ => h,
     }
 }
@@ -670,8 +670,11 @@ impl Canvas<'_> {
     /// The agent status ring, `h` px high (a little taller than digits, so it reads at a glance).
     #[allow(clippy::too_many_arguments)]
     fn agent_ring(&mut self, a: Agent, phase: u8, x: f32, bottom: f32, h: f32, col: [u8; 3], mono: bool) {
-        let d = (h * 1.15).round();
-        let (cx, cy, r) = (x + d / 2.0, bottom - h / 2.0, d / 2.0);
+        // The ring stands a little taller than the digits, as big as the menu bar allows.
+        let d = (h * 1.25).min(self.height as f32 - 4.0).round();
+        let r = d / 2.0;
+        let cy = (bottom - h / 2.0).clamp(r + 1.0, self.height as f32 - r - 1.0);
+        let cx = x + r;
         let t = (d * 0.17).max(2.2);
         let bx = (cx - r - 1.0, cy - r - 1.0, cx + r + 1.0, cy + r + 1.0);
         let dist = move |px: f32, py: f32| ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
@@ -787,12 +790,16 @@ pub const FONTS: [&str; 12] = ["system", "rounded", "mono", "newyork", "helvetic
 /// (only the alpha matters for a template image).
 #[cfg(target_os = "macos")]
 pub fn render(cfg: &MenuBar, units: &[Unit], fg: [u8; 3]) -> Option<(Vec<u8>, u32, u32)> {
-    let height = 36usize;
+    // 18 pt high normally; 22 pt (the menu bar's full height) once anything is drawn large, so big
+    // sizes really are big instead of being squeezed.
+    let k0 = cfg.scale();
+    let height = if units.iter().any(|u| 20.0 * k0 * u.scale > 27.0) { 44usize } else { 36usize };
+    let hf = height as f32;
     // Font sizes in px at 2x, scaled by the slider and the item's own size: one-line value/label,
     // two-line value/label. Capped so two lines always fit the 18 pt menu bar.
     let k = cfg.scale();
-    let one = |u: &Unit| ((20.0 * k * u.scale).min(28.0), (13.0 * k * u.scale).min(17.0));
-    let two = |u: &Unit| ((14.5 * k * u.scale).min(17.0), (11.0 * k * u.scale).min(13.0));
+    let one = |u: &Unit| ((20.0 * k * u.scale).min(hf - 8.0), (13.0 * k * u.scale).min(hf * 0.47));
+    let two = |u: &Unit| ((14.5 * k * u.scale).min((hf - 2.0) / 2.1), (11.0 * k * u.scale).min(hf * 0.36));
     let gap = cfg.gap_px();
     let mut canvas = Canvas { rgba: vec![], width: 0, height, font: &cfg.font, weight: &cfg.weight };
     let bl = blocks(cfg, units);
@@ -822,7 +829,7 @@ pub fn render(cfg: &MenuBar, units: &[Unit], fg: [u8; 3]) -> Option<(Vec<u8>, u3
         ((height as f32 - (a + d)) / 2.0 + a).round() as i32
     };
     // Two-line baselines in 36 px: the bottom line sits on the bottom edge, the top one a line above.
-    let bottom = 34;
+    let bottom = height as i32 - 2;
     let mut x = 2.0_f32;
     for (b, bwid) in bl.iter().zip(&bw) {
         match b {
@@ -900,6 +907,9 @@ mod tests {
         assert_eq!(d.items, ["agent", "net", "temp"]);
         assert!(!d.combined && !d.ring_color && !d.colored(), "separate items, menu-bar colour only");
         assert!(d.scale() >= 1.2, "normal size, not tiny");
+        let tiny = MenuBar { scale: 0.5, ..MenuBar::default() };
+        let huge = MenuBar { scale: 2.0, ..MenuBar::default() };
+        assert!(tiny.scale() == 0.5 && huge.scale() == 2.0, "the full 50–200% range");
     }
 
     #[test]
@@ -1014,7 +1024,7 @@ mod stress {
         let all = ["agent", "tokens", "net", "cpu", "temp", "mem", "disk", "battery", "clock"];
         let mut n = 0;
         for layout in ["row", "stacked", "top"] {
-            for scale in [0.7, 1.3] {
+            for scale in [0.5, 1.3, 2.0] {
                 for gap in [0.0, 12.0] {
                     for label in ["text", "icon", "none"] {
                         for net_stack in [true, false] {
@@ -1026,7 +1036,7 @@ mod stress {
                                     let clock = Clock { hour12: true, ampm: true, weekday: true, day: true, month: true };
                                     let cfg = MenuBar { items: items.clone(), layout: layout.into(), scale, gap_pt: Some(gap), net_stack, font: font.into(), weight: weight.into(), styles, clock, ..Default::default() };
                                     if let Some((rgba, w, h)) = render(&cfg, &units(&cfg, &v), [0; 3]) {
-                                        assert_eq!(h, 36);
+                                        assert!(h == 36 || h == 44, "18 or 22 pt high, got {h}");
                                         assert_eq!(rgba.len(), (w * h * 4) as usize);
                                     }
                                     n += 1;
@@ -1085,6 +1095,10 @@ mod preview {
             ("9-futura-top", MenuBar { items: vec!["tokens".into(), "mem".into()], font: "futura".into(), layout: "top".into(), ..Default::default() }),
             ("91-agent-pill", MenuBar { items: vec!["agent".into(), "cpu".into()], ..Default::default() }),
             ("92-agent-text", MenuBar { items: vec!["agent".into(), "cpu".into()], styles: [("agent".to_string(), ItemStyle { label: "text".into(), ..Default::default() })].into_iter().collect(), ..Default::default() }),
+            ("80-size-050", MenuBar { items: vec!["agent".into(), "net".into(), "temp".into(), "cpu".into()], scale: 0.5, ..Default::default() }),
+            ("81-size-100", MenuBar { items: vec!["agent".into(), "net".into(), "temp".into(), "cpu".into()], scale: 1.0, ..Default::default() }),
+            ("82-size-150", MenuBar { items: vec!["agent".into(), "net".into(), "temp".into(), "cpu".into()], scale: 1.5, ..Default::default() }),
+            ("83-size-200", MenuBar { items: vec!["agent".into(), "net".into(), "temp".into(), "cpu".into()], scale: 2.0, ..Default::default() }),
             ("90-battery-inside", MenuBar { items: vec!["battery".into(), "clock".into()], styles: [("battery".to_string(), ItemStyle { label: "inside".into(), ..Default::default() })].into_iter().collect(), ..Default::default() }),
             ("6-battery-icon-clock-12h", MenuBar { items: vec!["battery".into(), "clock".into()], styles: icons(&["battery"]), clock: full, ..Default::default() }),
         ];

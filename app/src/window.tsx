@@ -1162,7 +1162,7 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
           {k !== 'net' && k !== 'agent' && !insideBattery && <div class="field"><span>Layout</span><Seg label="Layout" value={layout} options={[['row', 'Side by side'], ['stacked', 'Stacked'], ['top', 'Label on top']] as const} onChange={(v) => save(with_({ layout: v }))} /></div>}
           {k === 'net' && <div class="field"><label for="mbn">Upload over download<div class="hint" style={{ margin: 0 }}>One narrow column instead of two side by side.</div></label>
             <input id="mbn" type="checkbox" checked={cfg.net_stack} onChange={(e) => save({ ...cfg, net_stack: e.currentTarget.checked })} /></div>}
-          <Slider id={`sz-${k}`} label="Size" min={70} max={140} step={5} value={Math.round((st.scale || 1) * 100)} fmt={(v) => `${v}%`}
+          <Slider id={`sz-${k}`} label="Size" min={50} max={200} step={5} value={Math.round((st.scale || 1) * 100)} fmt={(v) => `${v}%`}
             live={(v) => live(with_({ scale: v / 100 }))} save={(v) => save(with_({ scale: v / 100 }))} reset={st.scale && st.scale !== 1 ? () => save(with_({ scale: 0 })) : undefined} />
           {k !== 'agent' && <div class="field"><span>{insideBattery ? 'Battery colour' : 'Number colour'}</span><ColorPick label="Number colour" value={st.color} onChange={(v) => save(with_({ color: v }))} /></div>}
           {k === 'agent' && <div class="field"><label for="ringc">State colours<div class="hint" style={{ margin: 0 }}>Orange working, red needs you, green done. Off: the menu bar's own colour; the shapes still differ.</div></label>
@@ -1194,7 +1194,7 @@ function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCf
       <div class="group">
         <div class="field"><label for="mbc">Combine into one item<div class="hint" style={{ margin: 0 }}>Off: each item is its own menu-bar item and opens its own panel (Network shows network, Battery shows battery). On: one item that opens everything.</div></label>
           <input id="mbc" type="checkbox" checked={cfg.combined} onChange={(e) => save({ ...cfg, combined: e.currentTarget.checked })} /></div>
-        <Slider id="mbs" label="Text size" min={70} max={130} step={5} value={Math.round(presetScale(cfg) * 100)} fmt={(v) => `${v}%`}
+        <Slider id="mbs" label="Text size" min={50} max={200} step={5} value={Math.round(presetScale(cfg) * 100)} fmt={(v) => `${v}%`}
           live={(v) => live({ ...cfg, scale: v / 100 })} save={(v) => save({ ...cfg, scale: v / 100 })} />
         <Slider id="mbg" label="Spacing between items" min={0} max={12} step={0.5} value={presetGap(cfg)} fmt={(v) => `${v} pt`}
           live={(v) => live({ ...cfg, gap_pt: v })} save={(v) => save({ ...cfg, gap_pt: v })} />
