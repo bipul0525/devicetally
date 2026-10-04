@@ -18,7 +18,7 @@ Claude Code, Codex, OpenCode and Kimi usage · know when your agent is done · a
 
 - **AI coding usage:** tokens and API-equivalent cost from Claude Code, OpenAI Codex, OpenCode and Kimi, by model, project and computer. Think of [ccusage](https://github.com/ryoppippi/ccusage) for every computer you own.
 - **Agent status:** know when your AI coding agent is working, needs you, or is done, with Mac notifications and sounds.
-- **System monitor:** CPU, temperature, memory, network, disk and battery in one menu-bar item you design.
+- **System monitor:** CPU, temperature, memory, network, disk and battery, each in its own menu-bar item with a detailed panel, like Stats.
 - **Storage:** see what AI models, developer caches and big folders use, and clear caches safely.
 - **Device health:** every computer's status, disk forecast and tracking at a glance.
 
@@ -34,11 +34,40 @@ It runs on your own free Cloudflare Worker, so your data stays yours. More tools
 
 ---
 
+## Every menu-bar item opens its own panel
+
+<p align="center"><img src="docs/assets/panels.png" alt="Four DeviceTally panels: Agents with live prompts and history, Network with connectivity and public IP, CPU with top processes, Battery with health and cycles" width="100%"></p>
+
+Network, CPU, memory, disk, battery, clock and your coding agents each get **their own menu-bar item**, and each opens **its own panel**, like [Stats](https://github.com/exelban/stats), next to your AI usage, agent status and storage. Prefer one item? Turn on **Combine into one item**.
+
 ## Know when your agent is done
 
-Start a task in Claude Code, switch to something else. The **Agent status** ring in your menu bar turns while it works (**orange**), shows a red **!** when it needs you (a permission or a question), and a green **✓** when it's done, with an optional Mac notification and sound. It works in the terminal, in VS Code and in other editors. Codex too.
+Start a task in Claude Code, switch to something else. **Agent status** in your menu bar moves while it works, shows **!** when it needs you (a permission or a question), and **✓** when it's done, with a notification that names the prompt (*"Done: Fix the flaky login test · took 7 min"*) and a sound. It works in the terminal, in VS Code and in other editors. Codex too.
 
 <p align="center"><img src="docs/assets/agent-status.gif" alt="The Agent status ring changes from working to needs you to done, with Mac notifications" width="760"></p>
+
+<table>
+<tr>
+<td width="42%" valign="top">
+
+### The Agents panel
+What each agent is working on **right now** (its prompt, with a live timer), what **needs you**, and a **history** of finished tasks with how long each took. Today's count and agent time at the top.
+
+</td>
+<td width="58%" valign="top">
+
+### Pick a look
+While working: a **comet ring**, a **breathing pulse** or **wave dots**. When done: a **badge**, a **seal** or a plain **check**. In the menu bar's own colour, or orange / red / green.
+
+</td>
+</tr>
+<tr>
+<td align="center"><img src="docs/assets/panel-agent-dark.png" alt="Agents panel: working now with prompt and timer, needs you, recent finished tasks" width="320"></td>
+<td><img src="docs/assets/agent-looks-dark.png" alt="Agent status look settings: ring, pulse or dots while working; badge, seal or check when done"></td>
+</tr>
+</table>
+
+<p align="center"><img src="docs/assets/menubar-looks.png" alt="Real menu-bar renders of each agent look and the battery charger animation" width="100%"></p>
 
 ## Features
 
@@ -47,19 +76,37 @@ Start a task in Claude Code, switch to something else. The **Agent status** ring
 <td width="50%" valign="top">
 
 ### Usage across every computer
-Tokens and API-equivalent cost by **tool, model, project and computer**, with a day-by-day chart split by device. Claude Code in detail (input, output, cache, thinking; cost matches [ccusage](https://github.com/ryoppippi/ccusage)), plus Codex, OpenCode and Kimi totals.
+Tokens and API-equivalent cost by **tool, model, project and computer**, with a day-by-day chart split by device. Claude Code in detail (input, output, cache, thinking; cost matches [ccusage](https://github.com/ryoppippi/ccusage)), plus Codex, OpenCode and Kimi. Each computer sees its own full breakdown; the admin sees all of them.
 
 </td>
 <td width="50%" valign="top">
 
 ### A menu bar you design
-Agent status, tokens today, network ↑↓, CPU, CPU temperature, memory, disk, **battery with the percentage inside**, clock, each as **its own menu-bar item with its own panel** (live graphs, top processes, battery health, a calendar), or all combined into one. Each item gets its own label (text, Apple SF Symbols icon or none), layout, size and colour. 12 fonts, a live preview, and sliders that move the real menu bar.
+**Themes** (Clean, Stats, Colourful, Terminal, Icons) as a one-click start, then every item's label (text, SF Symbols icon or none), layout, size (50–200%), colour and spacing. 12 fonts, a live preview, **battery with the percentage inside** (with a charger animation), a digital or analog clock.
 
 </td>
 </tr>
 <tr>
 <td><img src="docs/assets/overview-dark.png" alt="Overview: devices table, daily chart split by device, usage by tool, model, device and project"></td>
-<td><img src="docs/assets/menubar-tab-light.png" alt="The Menu bar tab: live preview, items on the left, settings on the right"></td>
+<td><img src="docs/assets/menubar-themes-dark.png" alt="Menu bar settings: themes, separate or combined items, text size, typeface"></td>
+</tr>
+<tr>
+<td valign="top">
+
+### Network, like Stats
+Upload and download history, a **connectivity grid** with latency and jitter, totals you can reset, interface, MAC, local and **public IP** (with country and provider), DNS, and the **apps using the network** right now.
+
+</td>
+<td valign="top">
+
+### Storage
+What AI tools (Ollama models, Hugging Face, Claude Code, Cursor…), developer caches (Xcode, npm, Cargo, Go…) and big folders use, **how much is safe to clean**, a Safe / Caution / Risky label, **Show in Finder** and **Move to Bin** for caches. No permission pop-ups.
+
+</td>
+</tr>
+<tr>
+<td align="center"><img src="docs/assets/panel-net-dark.png" alt="Network panel: speeds, mirrored history, connectivity grid, latency, totals, public IP" width="320"></td>
+<td><img src="docs/assets/storage-dark.png" alt="Storage: disk bar by category, safe-to-clean total, AI tools and developer caches with sizes and actions"></td>
 </tr>
 <tr>
 <td valign="top">
@@ -70,32 +117,14 @@ Every computer shows **Online / Idle / Offline**, whether it's 🔒 locked, trac
 </td>
 <td valign="top">
 
-### Storage
-What AI tools (Ollama models, Hugging Face, Claude Code, Cursor…), developer caches (Xcode, npm, Cargo, Go…) and big folders use: a Safe / Caution / Risky label, **Show in Finder**, and **Move to Bin** for caches. Alerts at 80% and 90% full.
+### Prompts, if you want them
+The admin can collect prompt text (off by default) and browse it by day, with the date, device, project and agent, and filter by text, time range, project or device.
 
 </td>
 </tr>
 <tr>
 <td><img src="docs/assets/devices-dark.png" alt="Devices: status, lock, tracking warnings, disk forecast, allowed projects"></td>
-<td><img src="docs/assets/storage-dark.png" alt="Storage: AI tools, developer caches and biggest folders with sizes and actions"></td>
-</tr>
-<tr>
-<td valign="top">
-
-### Prompts, if you want them
-The admin can collect prompt text (off by default) and browse it by day, with the date, device, project and agent, and filter by text, time range, project or device.
-
-</td>
-<td valign="top">
-
-### The popover
-Click the menu-bar item: tokens for today, 7 or 30 days, by tool and model (with their logos), your computers, agents running now, and this computer's CPU, temperature, memory, disk, network and battery. It works over full-screen apps.
-
-</td>
-</tr>
-<tr>
 <td><img src="docs/assets/prompts-dark.png" alt="Prompts by day with device, project, agent and filters"></td>
-<td align="center"><img src="docs/assets/popover-dark.png" alt="The popover: tokens by tool and model, devices, agents now, this computer" width="300"></td>
 </tr>
 </table>
 

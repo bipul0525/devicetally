@@ -464,7 +464,6 @@ html:has(.notice), html:has(.notice) body { background: transparent; }
 .conn { display: grid; grid-template-columns: repeat(30, 1fr); gap: 2px; margin-bottom: 6px; }
 .conn i { aspect-ratio: 1; border-radius: 2px; background: var(--fill); }
 .conn i.up { background: #30d158; } .conn i.down { background: #ff453a; }
-.ok { color: #30d158; } .bad { color: #ff453a; }
 .h-act { display: flex; align-items: center; justify-content: space-between; }
 .icon-btn.small { font-size: 14px; padding: 0 4px; }
 

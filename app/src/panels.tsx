@@ -84,8 +84,8 @@ function Mirror({ down, up }: { down: number[]; up: number[] }) {
   return (
     <div class="mirror">
       <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Upload and download history">
-        <path d={area(u, top, 1)} fill="#ff9f0a" opacity="0.75" />
-        <path d={area(d, bot, -1)} fill="#5e5ce6" opacity="0.8" />
+        <path d={area(u, top, 1)} fill="#ff453a" opacity="0.75" />
+        <path d={area(d, bot, -1)} fill="#0a84ff" opacity="0.8" />
         <line x1="0" x2={W} y1={M} y2={M} stroke="currentColor" opacity="0.25" stroke-width="0.6" vector-effect="non-scaling-stroke" />
       </svg>
       <span class="mirror-top">↑ {rate(top)}</span><span class="mirror-bot">↓ {rate(bot)}</span>
@@ -120,7 +120,7 @@ function NetPanel() {
     <div class="section"><h2>Usage history</h2><Mirror down={h.map((p) => p.down)} up={h.map((p) => p.up)} /></div>
     <div class="section"><h2>Connectivity</h2>
       <div class="conn" role="img" aria-label="Connectivity over the last 3 minutes">{cells.map((c, i) => <i key={i} class={c === undefined ? '' : c === null ? 'down' : 'up'} />)}</div>
-      <Row k="Internet" v={online == null ? 'checking…' : online ? <span class="ok">● Connected</span> : <span class="bad">● No connection</span>} />
+      <Row k="Internet" v={online == null ? 'checking…' : online ? <span style={{ color: '#30d158' }}>● Connected</span> : <span style={{ color: '#ff453a' }}>● No connection</span>} />
       <Row k="Latency" v={d?.latency != null ? `${Math.round(d.latency)} ms` : '—'} />
       <Row k="Jitter" v={d?.jitter != null ? `${Math.round(d.jitter)} ms` : '—'} />
     </div>
