@@ -200,7 +200,9 @@ async fn get_summary(state: &AppState, range: &str) -> Result<Value, String> {
         return Err("device_revoked".into());
     }
     if !res.status().is_success() {
-        return Err(format!("server_{}", res.status().as_u16()));
+        let code = res.status().as_u16();
+        let v: Value = res.json().await.unwrap_or(Value::Null);
+        return Err(v["error"].as_str().map(String::from).unwrap_or(format!("server_{code}")));
     }
     res.json().await.map_err(|e| e.to_string())
 }

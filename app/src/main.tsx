@@ -3,7 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { render } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import './styles.css'
-import { AppTitle, MainWindow } from './window'
+import { AppTitle, ErrorState, MainWindow } from './window'
 import { Mark, modelName } from './brands'
 import { UpdateAgent, UpdateNote } from './updates'
 import { listen } from '@tauri-apps/api/event'
@@ -184,12 +184,7 @@ function Popover() {
     return (
       <div class="pop">
         {header}
-        <div class="state" role="alert">
-          <strong>{error === 'offline' ? 'Can’t reach your server' : error === 'server_404' ? 'Your server needs an update' : 'Something went wrong'}</strong>
-          <span>{error === 'offline' ? 'Check your connection.'
-            : error === 'server_404' ? 'It is older than this app. In the worker folder, run: npm run update'
-            : error.startsWith('server_') ? `Your server answered ${error.slice(7)}.` : error}</span>
-          <button class="btn" onClick={() => setN(n + 1)}>Try again</button></div>
+        <ErrorState error={error} retry={() => setN(n + 1)} />
       </div>
     )
   }

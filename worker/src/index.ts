@@ -22,6 +22,14 @@ const older = (a: string, b: string) => {
 }
 
 const app = new Hono<Env>()
+// Errors the app can explain: Cloudflare's free D1 plan stops the database for the rest of the day
+// (UTC) once its daily reads or writes are used up.
+app.onError((err, c) => {
+  const msg = String(err?.message ?? err)
+  if (/exceeded D1's free tier|daily row (read|write) limit/i.test(msg)) return c.json({ error: 'db_limit' }, 503)
+  console.error(err)
+  return c.json({ error: 'server_error' }, 500)
+})
 
 // --- Owner login ---
 app.post('/api/auth/setup', setup)

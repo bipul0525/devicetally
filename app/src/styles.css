@@ -514,3 +514,10 @@ td.muted { color: var(--muted); }
 .dt-card-btn { border: 0; border-radius: 6px; padding: 3px 10px; font-size: 11.5px; font-weight: 600; background: rgb(127 127 127 / 0.25); color: inherit; cursor: pointer; }
 .dt-card-btn.primary { background: #0a84ff; color: #fff; }
 .dev-updates { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 6px; }
+
+/* Error states: what happened and what to do */
+.err-state { max-width: 460px; margin: 40px auto; text-align: center; gap: 8px; }
+.err-state > span:not(.err-ic):not(.err-actions) { color: var(--muted); line-height: 1.45; }
+.err-ic { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; margin: 0 auto 4px; font-size: 19px; font-weight: 800; background: color-mix(in srgb, #ff453a 16%, transparent); color: #ff453a; }
+.err-ic.wait { background: color-mix(in srgb, #ff9f0a 16%, transparent); color: #ff9f0a; }
+.err-actions { display: flex; gap: 14px; justify-content: center; align-items: center; margin-top: 6px; }

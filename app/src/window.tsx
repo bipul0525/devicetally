@@ -59,14 +59,41 @@ function useLoad<T>(path: string | null, deps: unknown[] = []) {
   return { ...s, reload: () => setN((x) => x + 1) }
 }
 
+/** A plain explanation of an error code from the app or the server: what happened, what to do. */
+export function explain(error: string): { title: string; detail: string; link?: [string, string] } {
+  if (error === 'offline') return { title: 'Can’t reach your server', detail: 'Check the internet connection. Usage keeps being recorded on each computer and uploads when the server is reachable.' }
+  if (error === 'db_limit') {
+    const reset = new Date(); reset.setUTCHours(24, 0, 0, 0)
+    return {
+      title: 'Your server reached today’s free limit',
+      detail: `Cloudflare’s free plan pauses the database for the rest of the day. It’s back at ${reset.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. Nothing is lost: each computer keeps its usage and uploads it then.`,
+      link: ['Raise the limit (Workers Paid, $5/month)', 'https://dash.cloudflare.com/?to=/:account/workers/plans'],
+    }
+  }
+  if (error === 'server_404') return { title: 'Your server needs an update', detail: 'This screen needs a newer server. Settings → Server → Update server.' }
+  if (/^server_5\d\d$|^server_error$/.test(error)) return { title: 'Your server had a problem', detail: 'It’s usually temporary. Try again in a minute; if it keeps happening, update the server (Settings → Server).' }
+  return { title: 'Could not load this', detail: error }
+}
+
+export function ErrorState({ error, retry }: { error: string; retry: () => void }) {
+  const e = explain(error)
+  return (
+    <div class="state err-state" role="alert">
+      <span class={`err-ic ${error === 'db_limit' ? 'wait' : ''}`} aria-hidden="true">{error === 'db_limit' ? '⏳' : error === 'offline' ? '⚡︎' : '!'}</span>
+      <strong>{e.title}</strong>
+      <span>{e.detail}</span>
+      <span class="err-actions">
+        <button class="btn" onClick={retry}>Try again</button>
+        {e.link && <button class="link-btn" onClick={() => import('@tauri-apps/plugin-opener').then((m) => m.openUrl(e.link![1]))}>{e.link[0]}</button>}
+      </span>
+    </div>
+  )
+}
+
 function Load<T>({ q, children }: { q: ReturnType<typeof useLoad<T>>; children: (d: T) => ComponentChildren }) {
   if (q.error) {
     return (
-      <div class="state" role="alert">
-        <strong>{q.error === 'offline' ? 'Can’t reach your server' : q.error === 'server_404' ? 'Your server needs an update' : 'Could not load this'}</strong>
-        <span>{q.error === 'offline' ? 'Check your connection.' : q.error === 'server_404' ? 'This screen needs a newer server. Settings → Server → Update server.' : q.error}</span>
-        <button class="btn" onClick={q.reload}>Try again</button>
-      </div>
+      <ErrorState error={q.error} retry={q.reload} />
     )
   }
   if (!q.data) return <div aria-label="Loading" class="section"><div class="skel" style={{ height: 30, width: '50%' }} /><div class="skel" style={{ height: 12, width: '70%' }} /></div>
