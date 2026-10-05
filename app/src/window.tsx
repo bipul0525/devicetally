@@ -66,7 +66,7 @@ export function explain(error: string): { title: string; detail: string; link?: 
     const reset = new Date(); reset.setUTCHours(24, 0, 0, 0)
     return {
       title: 'Your server reached today’s free limit',
-      detail: `Cloudflare’s free plan pauses the database for the rest of the day. It’s back at ${reset.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. Nothing is lost: each computer keeps its usage and uploads it then.`,
+      detail: `Cloudflare’s free plan pauses the database until midnight UTC: ${reset.getDate() !== new Date().getDate() ? 'tomorrow ' : 'today '}at ${reset.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}, in about ${Math.max(1, Math.round((reset.getTime() - Date.now()) / 3600_000))} hour${Math.round((reset.getTime() - Date.now()) / 3600_000) === 1 ? '' : 's'}. Nothing is lost: each computer keeps its usage and uploads it then.`,
       link: ['Raise the limit (Workers Paid, $5/month)', 'https://dash.cloudflare.com/?to=/:account/workers/plans'],
     }
   }
