@@ -194,14 +194,29 @@ export async function ingest(c: Context<Env>) {
   stmts.push(...rollup.statement(db))
   if (stmts.length) await db.batch(stmts)
 
-  // 7. Active time: recompute whole sessions that got new events (correct across split or late batches).
-  const touched = [...new Set([...changedTurns.filter((t) => !old.has(t.id)).map((t) => t.session_id), ...newPrompts.map((p) => p.session_id)])]
+  // 7. Active time, incrementally: only gaps under ACTIVE_GAP_MS count, so new events can only change
+  // gaps from ACTIVE_GAP_MS before the earliest new event onwards. Sum that window's gaps with and
+  // without the new events and apply the difference. (Recomputing whole sessions read every reply of
+  // long sessions on each upload and used up D1's free daily reads.)
+  const newEvents = [...changedTurns.filter((t) => !old.has(t.id)), ...newPrompts]
+  const touched = [...new Set(newEvents.map((e) => e.session_id))]
   if (touched.length) {
+    const lo = new Map<string, number>()
+    for (const e of newEvents) lo.set(e.session_id, Math.min(lo.get(e.session_id) ?? Infinity, Number(e.ts) - ACTIVE_GAP_MS))
+    const windows = [...lo].map(([s, from]) => ({ s, lo: from }))
     const fresh = (await db.prepare(
-      `WITH ev AS (SELECT session_id s, ts FROM turns WHERE session_id IN ${inList()} UNION ALL SELECT session_id, ts FROM prompts WHERE session_id IN ${inList()}),
-            g AS (SELECT s, ts - lag(ts) OVER (PARTITION BY s ORDER BY ts) gap FROM ev)
-       SELECT s id, coalesce(sum(CASE WHEN gap < ? THEN gap END), 0) / 1000 active FROM g GROUP BY s`,
-    ).bind(JSON.stringify(touched), JSON.stringify(touched), ACTIVE_GAP_MS).all<{ id: string; active: number }>()).results
+      `WITH w AS (SELECT j.value->>'s' s, j.value->>'lo' lo FROM json_each(?1) j),
+            nw AS (SELECT value id FROM json_each(?2)),
+            ev AS (SELECT t.session_id s, t.id, t.ts FROM turns t JOIN w ON t.session_id = w.s AND t.ts >= w.lo
+                   UNION ALL SELECT p.session_id, p.id, p.ts FROM prompts p JOIN w ON p.session_id = w.s AND p.ts >= w.lo),
+            g1 AS (SELECT s, ts - lag(ts) OVER (PARTITION BY s ORDER BY ts) gap FROM ev),
+            g0 AS (SELECT s, ts - lag(ts) OVER (PARTITION BY s ORDER BY ts) gap FROM ev WHERE id NOT IN (SELECT id FROM nw))
+       SELECT w.s id,
+              coalesce((SELECT sum(CASE WHEN gap < ?3 THEN gap END) FROM g1 WHERE g1.s = w.s), 0)
+            - coalesce((SELECT sum(CASE WHEN gap < ?3 THEN gap END) FROM g0 WHERE g0.s = w.s), 0) delta_ms
+       FROM w`,
+    ).bind(JSON.stringify(windows), JSON.stringify(newEvents.map((e) => e.id)), ACTIVE_GAP_MS).all<{ id: string; delta_ms: number }>()).results
+      .map((r) => ({ id: r.id, active: Math.round(sessions.get(r.id)!.active_seconds + r.delta_ms / 1000) }))
     const active = new Rollup()
     const updates: { id: string; active: number }[] = []
     for (const r of fresh) {
