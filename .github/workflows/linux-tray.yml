@@ -1,0 +1,390 @@
+# Linux tray test: builds the Linux bundles once, then installs and runs the app on Ubuntu 22.04,
+# Ubuntu 24.04, Debian 12 and Arch with a virtual display and no desktop. A small
+# StatusNotifierWatcher stands in for the desktop's tray, and the test checks that DeviceTally's
+# tray item registers, has an icon, shows live text next to it, has a working menu, and quits from it.
+# Runs on demand and on pull requests that touch the app; separate from the release build (app.yml).
+name: Linux tray test
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Linux bundles
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: npm ci
+      - name: Bundle the server (for in-app setup)
+        run: npm --prefix ../worker ci && npm run server
+      - name: Bundle the agent (sidecar)
+        run: npm run agent
+        env:
+          TARGET: x86_64-unknown-linux-gnu
+          AGENT_VERSION: 0.0.0-dev
+      # Unsigned test build (no updater artifacts).
+      - name: Build (deb + AppImage)
+        run: npx tauri build --bundles deb,appimage --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: |
+            app/src-tauri/target/release/bundle/deb/*.deb
+            app/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  test:
+    name: tray / ${{ matrix.name }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: ubuntu-22.04-deb,      os: ubuntu-22.04,  container: "",                 pm: apt,    pkg: deb }
+          - { name: ubuntu-24.04-appimage, os: ubuntu-24.04,  container: "",                 pm: apt,    pkg: appimage }
+          - { name: debian-12-deb,         os: ubuntu-latest, container: "debian:12",        pm: apt,    pkg: deb }
+          - { name: archlinux-appimage,    os: ubuntu-latest, container: "archlinux:latest", pm: pacman, pkg: appimage }
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-bundles
+          path: dist
+
+      # Host libraries on every system (AppImages bundle WebKitGTK unreliably).
+      - name: Install system packages (apt)
+        if: matrix.pm == 'apt'
+        run: |
+          SUDO=""; [ "$(id -u)" != "0" ] && SUDO="sudo"
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-0 libayatana-appindicator3-1 libgtk-3-0 librsvg2-common \
+            xvfb x11-utils dbus dbus-x11 libglib2.0-bin \
+            python3 python3-venv python3-pip \
+            xdotool wmctrl imagemagick jq procps file ca-certificates
+
+      - name: Install system packages (pacman)
+        if: matrix.pm == 'pacman'
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            webkit2gtk-4.1 libayatana-appindicator gtk3 \
+            xorg-server-xvfb xorg-xdpyinfo dbus glib2 \
+            python python-pip \
+            xdotool wmctrl imagemagick jq procps-ng file
+
+      - name: Locate the bundles
+        run: |
+          DEB=$(find dist -name '*.deb' | head -n1)
+          APPIMAGE=$(find dist -name '*.AppImage' | head -n1)
+          echo "DEB_PATH=$DEB" >> "$GITHUB_ENV"
+          echo "APPIMAGE_PATH=$APPIMAGE" >> "$GITHUB_ENV"
+          chmod +x "$APPIMAGE"
+
+      # Xvfb and a D-Bus session that stay up across steps.
+      - name: Start Xvfb and a D-Bus session bus
+        run: |
+          Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          export DISPLAY=:99
+          for i in $(seq 1 30); do [ -e /tmp/.X11-unix/X99 ] && break; sleep 0.5; done
+          eval "$(dbus-launch --sh-syntax)"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_PID=$DBUS_SESSION_BUS_PID" >> "$GITHUB_ENV"
+
+      # A StatusNotifierWatcher (the desktop's tray side) and a client that inspects the registered
+      # item and drives its com.canonical.dbusmenu menu. Raw messages with explicit signatures
+      # (GetLayout's reply is recursive variants).
+      - name: Write the tray tool
+        run: |
+          cat > sni_tool.py <<'PY'
+          import argparse, asyncio, json, sys, time
+          from dbus_next.aio import MessageBus
+          from dbus_next.service import ServiceInterface, method, dbus_property, signal
+          from dbus_next import Variant, PropertyAccess, Message, MessageType
+
+          WATCHER_BUS = 'org.kde.StatusNotifierWatcher'
+          WATCHER_PATH = '/StatusNotifierWatcher'
+          ITEM_IFACES = ['org.kde.StatusNotifierItem', 'org.freedesktop.StatusNotifierItem']
+
+
+          class Watcher(ServiceInterface):
+              def __init__(self):
+                  super().__init__(WATCHER_BUS)
+                  self.items = []
+
+              @method()
+              def RegisterStatusNotifierItem(self, service: 's'):
+                  entry = service if '/' in service else service + '/StatusNotifierItem'
+                  if entry not in self.items:
+                      self.items.append(entry)
+                      self.StatusNotifierItemRegistered(entry)
+                  print(f'REGISTERED {entry}', flush=True)
+
+              @method()
+              def RegisterStatusNotifierHost(self, service: 's'):
+                  print(f'HOST {service}', flush=True)
+
+              @dbus_property(access=PropertyAccess.READ)
+              def RegisteredStatusNotifierItems(self) -> 'as':
+                  return self.items
+
+              @dbus_property(access=PropertyAccess.READ)
+              def IsStatusNotifierHostRegistered(self) -> 'b':
+                  return True
+
+              @dbus_property(access=PropertyAccess.READ)
+              def ProtocolVersion(self) -> 'i':
+                  return 0
+
+              @signal()
+              def StatusNotifierItemRegistered(self, service) -> 's':
+                  return service
+
+              @signal()
+              def StatusNotifierItemUnregistered(self, service) -> 's':
+                  return service
+
+
+          async def watch():
+              bus = await MessageBus().connect()
+              bus.export(WATCHER_PATH, Watcher())
+              await bus.request_name(WATCHER_BUS)
+              print('WATCHER READY', flush=True)
+              await asyncio.get_event_loop().create_future()
+
+
+          async def call(bus, destination, path, interface, member, signature='', body=None):
+              msg = Message(destination=destination, path=path, interface=interface, member=member, signature=signature, body=body or [])
+              reply = await bus.call(msg)
+              if reply.message_type == MessageType.ERROR:
+                  raise RuntimeError(f'{destination} {interface}.{member} -> {reply.body}')
+              return reply.body
+
+
+          async def get_prop(bus, destination, path, interface, name):
+              body = await call(bus, destination, path, 'org.freedesktop.DBus.Properties', 'Get', 'ss', [interface, name])
+              return body[0].value
+
+
+          async def get_all_props(bus, destination, path, interface):
+              body = await call(bus, destination, path, 'org.freedesktop.DBus.Properties', 'GetAll', 's', [interface])
+              return {k: v.value for k, v in body[0].items()}
+
+
+          async def registered_items(bus):
+              raw = await get_prop(bus, WATCHER_BUS, WATCHER_PATH, WATCHER_BUS, 'RegisteredStatusNotifierItems')
+              out = []
+              for entry in raw:
+                  if '/' in entry:
+                      i = entry.index('/')
+                      out.append((entry[:i], entry[i:]))
+                  else:
+                      out.append((entry, '/StatusNotifierItem'))
+              return out
+
+
+          async def item_iface(bus, bus_name, obj_path):
+              xml = (await call(bus, bus_name, obj_path, 'org.freedesktop.DBus.Introspectable', 'Introspect'))[0]
+              for cand in ITEM_IFACES:
+                  if f'interface name="{cand}"' in xml:
+                      return cand
+              return ITEM_IFACES[0]
+
+
+          def flatten_layout(node):
+              nid, props, children = node
+              label = props.get('label')
+              out = [(nid, label.value if label is not None else None)]
+              for child in children:
+                  out += flatten_layout(child.value)
+              return out
+
+
+          async def menu_entries(bus, bus_name, menu_path):
+              _rev, layout = await call(bus, bus_name, menu_path, 'com.canonical.dbusmenu', 'GetLayout', 'iias', [0, -1, []])
+              return flatten_layout(layout)
+
+
+          def plain(v):
+              try:
+                  return json.loads(json.dumps(v, default=str))
+              except Exception:
+                  return str(v)
+
+
+          async def cmd_inspect(bus):
+              items = await registered_items(bus)
+              result = {'items': [f'{b}{p}' for b, p in items]}
+              if not items:
+                  print('FAIL: no StatusNotifierItem registered')
+                  json.dump(result, open('sni-inspect.json', 'w'))
+                  return 1
+              bus_name, obj_path = items[0]
+              iface = await item_iface(bus, bus_name, obj_path)
+              props = await get_all_props(bus, bus_name, obj_path, iface)
+              icon_ok = bool(props.get('IconPixmap')) or bool(props.get('IconName'))
+              # libayatana-appindicator puts the text next to the icon in XAyatanaLabel.
+              label = props.get('XAyatanaLabel') or ''
+              menu_path = props.get('Menu')
+              entries = await menu_entries(bus, bus_name, menu_path) if menu_path and menu_path != '/' else []
+              labels = [l for _i, l in entries if l]
+              result.update({'item': {'bus_name': bus_name, 'obj_path': obj_path, 'iface': iface,
+                                      'props': {k: plain(v) for k, v in props.items() if k != 'IconPixmap'},
+                                      'IconPixmapCount': len(props.get('IconPixmap') or [])},
+                             'label': label, 'menu': labels})
+              print(json.dumps(result, indent=2, default=str))
+              json.dump(result, open('sni-inspect.json', 'w'), default=str)
+              ok = True
+              if not icon_ok:
+                  print('FAIL: the tray item has no icon'); ok = False
+              if not any('Open DeviceTally' in l for l in labels) or not any('Quit DeviceTally' in l for l in labels):
+                  print(f'FAIL: menu lacks Open/Quit DeviceTally: {labels}'); ok = False
+              if not label.strip():
+                  print('FAIL: no live text next to the icon (XAyatanaLabel is empty)'); ok = False
+              return 0 if ok else 1
+
+
+          async def cmd_activate(bus):
+              items = await registered_items(bus)
+              if not items:
+                  return 1
+              bus_name, obj_path = items[0]
+              iface = await item_iface(bus, bus_name, obj_path)
+              await call(bus, bus_name, obj_path, iface, 'Activate', 'ii', [0, 0])
+              print(f'Activate sent to {bus_name}{obj_path}')
+              return 0
+
+
+          async def cmd_click(bus, label_substr):
+              items = await registered_items(bus)
+              if not items:
+                  print('FAIL: no item'); return 1
+              bus_name, obj_path = items[0]
+              iface = await item_iface(bus, bus_name, obj_path)
+              menu_path = await get_prop(bus, bus_name, obj_path, iface, 'Menu')
+              entries = await menu_entries(bus, bus_name, menu_path)
+              match = next((e for e in entries if e[1] and label_substr in e[1]), None)
+              if not match:
+                  print(f'FAIL: no menu entry "{label_substr}"; have {[l for _i, l in entries]}'); return 1
+              nid, label = match
+              try:
+                  await call(bus, bus_name, menu_path, 'com.canonical.dbusmenu', 'Event', 'isvu', [nid, 'clicked', Variant('s', ''), int(time.time())])
+                  print(f'Clicked "{label}" (id {nid})')
+              except Exception as e:
+                  # Quit can exit before replying; the caller checks the process.
+                  print(f'Event sent (no reply, likely exited): {e}')
+              return 0
+
+
+          async def main():
+              ap = argparse.ArgumentParser()
+              sub = ap.add_subparsers(dest='cmd', required=True)
+              sub.add_parser('watch'); sub.add_parser('inspect'); sub.add_parser('activate')
+              sub.add_parser('click').add_argument('label')
+              args = ap.parse_args()
+              if args.cmd == 'watch':
+                  await watch(); return 0
+              bus = await MessageBus().connect()
+              return await {'inspect': cmd_inspect, 'activate': cmd_activate}[args.cmd](bus) if args.cmd != 'click' else await cmd_click(bus, args.label)
+
+
+          if __name__ == '__main__':
+              sys.exit(asyncio.run(main()) or 0)
+          PY
+          python3 -m venv .snienv
+          .snienv/bin/pip install --quiet --upgrade pip dbus-next
+
+      - name: Start the StatusNotifierWatcher
+        run: |
+          .snienv/bin/python sni_tool.py watch > watcher.log 2>&1 &
+          for i in $(seq 1 30); do
+            gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+              --method org.freedesktop.DBus.NameHasOwner org.kde.StatusNotifierWatcher 2>/dev/null | grep -q true && break
+            sleep 0.5
+          done
+          gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+            --method org.freedesktop.DBus.NameHasOwner org.kde.StatusNotifierWatcher | grep -q true || { cat watcher.log; exit 1; }
+
+      - name: Install the .deb
+        if: matrix.pkg == 'deb'
+        run: |
+          SUDO=""; [ "$(id -u)" != "0" ] && SUDO="sudo"
+          $SUDO apt-get install -y "./$DEB_PATH"
+
+      - name: Launch the app
+        run: |
+          mkdir -p "$RUNNER_TEMP/dt-home"
+          export HOME="$RUNNER_TEMP/dt-home" WEBKIT_DISABLE_COMPOSITING_MODE=1 NO_AT_BRIDGE=1 GDK_BACKEND=x11
+          if [ "${{ matrix.pkg }}" = deb ]; then
+            devicetally-app > app.log 2>&1 &
+          else
+            "$APPIMAGE_PATH" --appimage-extract-and-run > app.log 2>&1 &
+          fi
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait, and check the app is still running
+        run: |
+          sleep 20
+          kill -0 "$APP_PID" 2>/dev/null || { echo "the app crashed or exited"; cat app.log; cat watcher.log; exit 1; }
+
+      - name: Check the tray item, its live text and its menu
+        run: .snienv/bin/python sni_tool.py inspect
+
+      - name: Screenshot
+        if: always()
+        continue-on-error: true
+        run: |
+          IMPORT=import; command -v import >/dev/null 2>&1 || IMPORT="magick import"
+          $IMPORT -window root screenshot.png
+
+      - name: Open DeviceTally from the menu, and look for its window
+        continue-on-error: true
+        run: |
+          .snienv/bin/python sni_tool.py click "Open DeviceTally"
+          sleep 6
+          xdotool search --name "DeviceTally" || echo "no DeviceTally window found"
+          IMPORT=import; command -v import >/dev/null 2>&1 || IMPORT="magick import"
+          $IMPORT -window root screenshot-window.png || true
+
+      - name: Quit from the menu, and check it exits
+        run: |
+          .snienv/bin/python sni_tool.py click "Quit DeviceTally"
+          for i in $(seq 1 20); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.5; done
+          if kill -0 "$APP_PID" 2>/dev/null; then echo "did not exit after Quit"; cat app.log; kill -9 "$APP_PID"; exit 1; fi
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tray-${{ matrix.name }}
+          path: |
+            *.png
+            *.log
+            sni-inspect.json
+          if-no-files-found: ignore

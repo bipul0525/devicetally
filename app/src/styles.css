@@ -522,3 +522,4 @@ td.muted { color: var(--muted); }
 .err-ic.wait { background: color-mix(in srgb, #ff9f0a 16%, transparent); color: #ff9f0a; }
 .err-actions { display: flex; gap: 14px; justify-content: center; align-items: center; margin-top: 6px; }
 .fallback-note { margin-bottom: 10px; }
+.os-preview { font-size: 15px; padding: 10px 12px; border-radius: 8px; background: #1c1c1e; color: #fff; margin-top: 6px; }

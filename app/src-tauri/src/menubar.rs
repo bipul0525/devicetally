@@ -312,9 +312,20 @@ pub fn units(cfg: &MenuBar, v: &Values) -> Vec<Unit> {
     out
 }
 
-/// Plain text for tooltips (Windows/Linux trays can't show text next to the icon).
+/// Plain text: the tooltip, and on Linux the live text next to the tray icon (Linux trays show a
+/// title, not our drawn image). Agent status reads as a word; idle and empty pieces are left out.
 pub fn text(units: &[Unit]) -> String {
-    units.iter().map(|u| if u.label.is_empty() { u.value.clone() } else { format!("{} {}", u.label, u.value) }).collect::<Vec<_>>().join("  ")
+    units
+        .iter()
+        .filter_map(|u| {
+            if let (Some(Icon::AgentRing(a, ..)), true) = (u.icon, u.value.is_empty()) {
+                return (a != Agent::Idle).then(|| a.word().to_string());
+            }
+            let v = if u.label.is_empty() { u.value.clone() } else { format!("{} {}", u.label, u.value) };
+            (!v.trim().is_empty()).then_some(v)
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// "#rrggbb" to RGB.
@@ -1052,6 +1063,18 @@ mod tests {
         };
         let (n, l, m) = (w(1.0), w(1.4), w(2.0));
         assert!(n < l && l < m, "Normal {n} < Large {l} < Max {m}");
+    }
+
+    #[test]
+    fn plain_text_for_linux_titles() {
+        let cfg = MenuBar { items: vec!["agent".into(), "cpu".into(), "battery".into()], ..Default::default() };
+        let mut v = values();
+        v.agent = (Agent::Working, 1);
+        let t = text(&units(&cfg, &v));
+        assert!(t.starts_with("Working · "), "agent as a word first: {t}");
+        assert!(t.contains("18%") || t.contains('%'), "{t}");
+        v.agent = (Agent::Idle, 0);
+        assert!(!text(&units(&cfg, &v)).contains("Idle"), "idle is left out");
     }
 
     #[test]

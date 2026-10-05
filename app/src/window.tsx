@@ -1450,6 +1450,36 @@ const NavIcon = ({ k }: { k: string }) => <svg class="nav-icon" width="16" heigh
 
 /** Menu bar tab, laid out like Stats: sections on the left, the selected one (with the live
  *  preview on top) on the right, at any window width. */
+const IS_MAC = navigator.userAgent.includes('Mac')
+const IS_LINUX = navigator.userAgent.includes('Linux')
+
+/** Linux and Windows: trays show one icon with text (Linux) or a tooltip (Windows), not drawn
+ *  items, and don't pass clicks to apps. What will show, and how to open DeviceTally. */
+function OtherOsPane({ cfg }: { cfg: MenuBarCfg }) {
+  const [text, setText] = useState('')
+  useEffect(() => {
+    const load = () => invoke<{ text: string }>('menubar_preview', { cfg: { ...cfg, combined: true } }).then((r) => setText(r.text), () => {})
+    load()
+    const t = setInterval(load, 2000)
+    return () => clearInterval(t)
+  }, [cfg])
+  return (
+    <div class="mb-pane">
+      <Card title={IS_LINUX ? 'In the top bar' : 'In the system tray'}>
+        <div class="field col"><span class="hint" style={{ margin: 0 }}>{IS_LINUX ? 'Next to the DeviceTally icon:' : 'When you point at the DeviceTally icon:'}</span>
+          <div class="os-preview num">{text || 'Only the DeviceTally icon'}</div></div>
+        <p class="hint" style={{ margin: 0 }}>Turn items on or off and drag them into order on the left. Colours, fonts, sizes and separate items are macOS-only.</p>
+      </Card>
+      <Card title="Opening DeviceTally">
+        <p class="hint" style={{ margin: 0 }}>{IS_LINUX
+          ? 'Click the DeviceTally icon to open its menu, then Open DeviceTally. (Linux trays open the menu on click.)'
+          : 'Click the DeviceTally icon, or right-click it for its menu.'}</p>
+        {IS_LINUX && <p class="hint" style={{ margin: 0 }}>Don't see the icon on GNOME (e.g. Debian or Fedora)? Install and turn on the "AppIndicator and KStatusNotifierItem Support" extension. Ubuntu has it on already.</p>}
+      </Card>
+    </div>
+  )
+}
+
 function MenuBarTab() {
   const [cfg, setCfg] = useState<MenuBarCfg | null>(null)
   const [sel, setSel] = useState('general')
@@ -1542,9 +1572,10 @@ function MenuBarTab() {
         {hidden.map(([k, l]) => navItem(k, l, false))}
       </nav>
       <div class="mb-main">
-        <div class="mb-top"><BarPreview cfg={cfg} sel={sel} select={setSel} /></div>
-        {sel === 'general' ? <GeneralPane cfg={cfg} save={save} live={live} />
-          : <ItemPane k={sel} cfg={cfg} save={save} live={live} />}
+        {!IS_MAC ? <OtherOsPane cfg={cfg} /> : <>
+          <div class="mb-top"><BarPreview cfg={cfg} sel={sel} select={setSel} /></div>
+          {sel === 'general' ? <GeneralPane cfg={cfg} save={save} live={live} />
+            : <ItemPane k={sel} cfg={cfg} save={save} live={live} />}</>}
       </div>
     </div>
   )
@@ -1703,7 +1734,7 @@ function StorageTab() {
                   </div>
                   <div class="st-size"><b class="num">{gbText(r.bytes)}</b><div class="st-mini"><i style={{ width: `${(r.bytes / biggest) * 100}%`, background: col }} /></div></div>
                   <span class="storage-actions">
-                    <button class="btn" onClick={() => invoke('reveal_path', { path: r.path })}>Show in Finder</button>
+                    <button class="btn" onClick={() => invoke('reveal_path', { path: r.path })}>{IS_MAC ? 'Show in Finder' : 'Show in folder'}</button>
                     {r.trash && <button class="btn" onClick={() => setTrashing(r.path)}>Move to Bin</button>}
                   </span>
                 </div>

@@ -26,10 +26,10 @@ pub fn may_trash(home: &Path, path: &Path) -> bool {
         return false;
     }
     let never = [".claude/projects", ".codex/sessions", ".Trash"];
-    if let Some(k) = KNOWN.iter().find(|k| home.join(k.2) == path) {
+    if let Some(k) = KNOWN.iter().find(|k| home.join(here(k.2)) == path) {
         return !never.contains(&k.2);
     }
-    path.parent() == Some(&home.join("Library/Caches"))
+    path.parent() == Some(&home.join("Library/Caches")) || (cfg!(target_os = "linux") && path.parent() == Some(&home.join(".cache")))
 }
 
 // (group, name, path under home, what it is, risk)
@@ -121,26 +121,50 @@ fn skipped(home: &Path, p: &Path, full: bool) -> bool {
 /// Whether DeviceTally has Full Disk Access: then nothing in the home folder makes macOS ask.
 /// Reading Safari's folder fails quietly without it (it never shows a prompt).
 pub fn full_access(home: &Path) -> bool {
-    std::fs::read_dir(home.join("Library/Safari")).is_ok()
+    // Only macOS guards home folders with prompts; elsewhere everything can be scanned.
+    !cfg!(target_os = "macos") || std::fs::read_dir(home.join("Library/Safari")).is_ok()
+}
+
+/// Where a known location lives on this OS: the macOS paths in KNOWN, with their Linux homes
+/// (~/.cache, ~/.config, ~/.local/share). Locations with no Linux equivalent (Xcode…) stay as they
+/// are and simply aren't found.
+pub fn here(rel: &str) -> String {
+    if !cfg!(target_os = "linux") {
+        return rel.to_string();
+    }
+    const LINUX: &[(&str, &str)] = &[
+        ("Library/Application Support/Claude", ".config/Claude"),
+        ("Library/Application Support/Cursor", ".config/Cursor"),
+        ("Library/Application Support/Windsurf", ".config/Windsurf"),
+        ("Library/Application Support/Code/CachedData", ".config/Code/CachedData"),
+        ("Library/pnpm/store", ".local/share/pnpm/store"),
+        ("Library/Caches/Yarn", ".cache/yarn"),
+        ("Library/Caches/pip", ".cache/pip"),
+        ("Library/Caches/go-build", ".cache/go-build"),
+        ("Library/Caches/JetBrains", ".cache/JetBrains"),
+        ("Library/Caches/ms-playwright", ".cache/ms-playwright"),
+        ("Library/Caches/Homebrew", ".cache/Homebrew"),
+    ];
+    LINUX.iter().find(|(m, _)| *m == rel).map(|(_, l)| l.to_string()).unwrap_or_else(|| rel.to_string())
 }
 
 /// `full`: DeviceTally has Full Disk Access (see `full_access`), so every folder can be sized.
 pub fn scan(home: &Path, full: bool) -> Vec<Item> {
     let mut out = vec![];
-    let known: Vec<PathBuf> = KNOWN.iter().map(|k| home.join(k.2)).collect();
+    let known: Vec<PathBuf> = KNOWN.iter().map(|k| home.join(here(k.2))).collect();
     for (k, bytes) in KNOWN.iter().zip(sizes(known.clone())) {
         if let Some(b) = bytes.filter(|b| *b >= 1 << 20) {
-            out.push(Item { group: k.0, name: k.1.into(), about: k.3, risk: k.4, path: home.join(k.2).to_string_lossy().into(), bytes: b, trash: may_trash(home, &home.join(k.2)) });
+            out.push(Item { group: k.0, name: k.1.into(), about: k.3, risk: k.4, path: home.join(here(k.2)).to_string_lossy().into(), bytes: b, trash: may_trash(home, &home.join(here(k.2))) });
         }
     }
     // Biggest folders: home and ~/Library, one level down (hidden ones too; that's where caches hide).
     let mut dirs = vec![];
     // Caches and Application Support are broken down by app: "Caches 21 GB" alone doesn't help.
-    for base in [home.to_path_buf(), home.join("Library"), home.join("Library/Caches"), home.join("Library/Application Support")] {
+    for base in [home.to_path_buf(), home.join("Library"), home.join("Library/Caches"), home.join("Library/Application Support"), home.join(".cache"), home.join(".config")] {
         for e in std::fs::read_dir(&base).into_iter().flatten().flatten() {
             let p = e.path();
             let is_dir = e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink());
-            if is_dir && p != home.join("Library") && p != home.join("Library/Caches") && p != home.join("Library/Application Support") && !skipped(home, &p, full) {
+            if is_dir && ![home.join("Library"), home.join("Library/Caches"), home.join("Library/Application Support"), home.join(".cache"), home.join(".config")].contains(&p) && !skipped(home, &p, full) {
                 dirs.push(p);
             }
         }

@@ -275,6 +275,9 @@ async fn storage_scan() -> Result<Value, String> {
 /// Opens Privacy & Security → Full Disk Access, where DeviceTally can be turned on once.
 #[tauri::command]
 async fn open_full_disk_access(app: AppHandle) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
     use tauri_plugin_opener::OpenerExt;
     app.opener().open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles", None::<&str>).map_err(|e| e.to_string())
 }
@@ -296,8 +299,9 @@ async fn trash_path(path: String) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = p;
-        Err("Moving to the Bin is available on macOS for now.".into())
+        // Linux: the desktop's Trash (gio, part of GLib on GNOME, KDE, XFCE…), so it can be restored.
+        let ok = std::process::Command::new("gio").args(["trash", "--"]).arg(&p).status().map(|s| s.success()).unwrap_or(false);
+        if ok { Ok(()) } else { Err("Couldn't move it to the Trash here. Use Show in Finder and delete it from your file manager.".into()) }
     }
 }
 
@@ -676,7 +680,8 @@ fn draw_menubar(app: &AppHandle) {
     let needs_stats = cfg.items.iter().any(|i| matches!(i.as_str(), "net" | "cpu" | "temp" | "mem" | "disk" | "battery"));
     let sessions = activity::read(&agent_dir().join("activity"));
     let agent = activity::agent(&sessions, now_ms(), *state.activity_seen.lock().unwrap());
-    state.animating.store(agent.0 == menubar::Agent::Working && cfg.items.iter().any(|i| i == "agent"), std::sync::atomic::Ordering::Relaxed);
+    // Only macOS draws the turning ring (Linux and Windows show text).
+    state.animating.store(cfg!(target_os = "macos") && agent.0 == menubar::Agent::Working && cfg.items.iter().any(|i| i == "agent"), std::sync::atomic::Ordering::Relaxed);
     let fresh = state.last_sample.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_millis(1800));
     let mut values = menubar::Values {
         agent,
@@ -715,7 +720,7 @@ fn draw_menubar(app: &AppHandle) {
     }
     let battery_moving = values.battery_anim > 0 && cfg.items.iter().any(|i| i == "battery");
     state.battery_moving.store(battery_moving, std::sync::atomic::Ordering::Relaxed);
-    if battery_moving {
+    if battery_moving && cfg!(target_os = "macos") {
         state.animating.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let mut units = menubar::units(&cfg, &values);
@@ -819,7 +824,16 @@ fn apply_menubar(app: &AppHandle, want: &[String], drawn: Vec<(String, Option<Dr
     sync_trays(app, want);
     let _ = tray.set_visible(!separate);
     if !cfg!(target_os = "macos") {
-        let _ = tray.set_tooltip(Some(tip));
+        // Linux trays show a title next to the icon (no tooltips, no clicks); Windows a tooltip.
+        static LAST: Mutex<String> = Mutex::new(String::new());
+        let mut last = LAST.lock().unwrap();
+        if *last != tip {
+            if cfg!(target_os = "linux") {
+                let _ = tray.set_title(Some(if tip == "DeviceTally" { "" } else { tip.as_str() }));
+            }
+            let _ = tray.set_tooltip(Some(&tip));
+            *last = tip;
+        }
         return;
     }
     let mut icons = state.item_icons.lock().unwrap();
@@ -1801,7 +1815,7 @@ fn sync_trays(app: &AppHandle, want: &[String]) {
 
 fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let open = MenuItem::with_id(app, "dashboard", "Open DeviceTally", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit DeviceTally", true, None::<&str>)?;
     Menu::with_items(app, &[&open, &settings, &PredefinedMenuItem::separator(app)?, &quit])
 }
@@ -1990,7 +2004,7 @@ pub fn run() {
             });
 
             let open = MenuItem::with_id(app, "dashboard", "Open DeviceTally", true, None::<&str>)?;
-            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit DeviceTally", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &settings, &PredefinedMenuItem::separator(app)?, &quit])?;
 
