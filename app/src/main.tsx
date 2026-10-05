@@ -3,7 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { render } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 import './styles.css'
-import { AppTitle, ErrorState, MainWindow } from './window'
+import { AppTitle, ErrorState, FallbackNote, MainWindow } from './window'
 import { Mark, modelName } from './brands'
 import { UpdateAgent, UpdateNote } from './updates'
 import { listen } from '@tauri-apps/api/event'
@@ -163,7 +163,8 @@ function Popover() {
     return (
       <div class="pop">
         <header class="pop-head">{brand}<h1 class="panel-title">{PANEL_TITLE[panel]}</h1></header>
-        <div class="pop-body"><ModulePanel panel={panel} /></div>
+        <div class="pop-body">
+        {(data as { fallback?: string } | null)?.fallback && <FallbackNote error={(data as unknown as { fallback: string }).fallback} />}<ModulePanel panel={panel} /></div>
       </div>
     )
   }

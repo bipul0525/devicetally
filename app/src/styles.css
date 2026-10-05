@@ -521,3 +521,4 @@ td.muted { color: var(--muted); }
 .err-ic { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; margin: 0 auto 4px; font-size: 19px; font-weight: 800; background: color-mix(in srgb, #ff453a 16%, transparent); color: #ff453a; }
 .err-ic.wait { background: color-mix(in srgb, #ff9f0a 16%, transparent); color: #ff9f0a; }
 .err-actions { display: flex; gap: 14px; justify-content: center; align-items: center; margin-top: 6px; }
+.fallback-note { margin-bottom: 10px; }

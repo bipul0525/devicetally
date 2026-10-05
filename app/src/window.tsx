@@ -75,6 +75,12 @@ export function explain(error: string): { title: string; detail: string; link?: 
   return { title: 'Could not load this', detail: error }
 }
 
+/** Shown above this computer's own count when the server couldn't answer. */
+export function FallbackNote({ error }: { error: string }) {
+  const e = explain(error)
+  return <div class="note fallback-note" role="status" title={e.detail}><span class="note-ic warn" aria-hidden="true" /><span><b>{e.title}.</b> Showing this computer's own count (no cost estimate) until it's back.</span></div>
+}
+
 export function ErrorState({ error, retry }: { error: string; retry: () => void }) {
   const e = explain(error)
   return (
@@ -281,8 +287,10 @@ function OverviewTab({ admin }: { admin: boolean }) {
         {(d) => {
           const t = d.totals
           const change = d.previous.tokens ? Math.round(((t.tokens - d.previous.tokens) / d.previous.tokens) * 100) : null
+          const fallback = (d as { fallback?: string }).fallback
           return (
             <>
+              {fallback && <FallbackNote error={fallback} />}
               <div class="focal">
                 <div class="big num">{fmt(t.tokens)} <span style={{ fontSize: 13, fontWeight: 400 }}>tokens</span></div>
                 <div class="sub num">

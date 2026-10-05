@@ -1167,7 +1167,17 @@ async fn summary(state: State<'_, AppState>, range: String) -> Result<Value, Str
         "7d" | "30d" => range,
         _ => "today".to_string(),
     };
-    get_summary(&state, &range).await
+    let admin = { let server = state.config.lock().unwrap().server.clone(); !server.is_empty() && state.token(&server).is_some() };
+    match get_summary(&state, &range).await {
+        // As in `api`: this computer's own count when the server can't answer.
+        Err(e) if !admin && server_down(&e) && state.agent.lock().unwrap().is_some() => {
+            let days = match range.as_str() { "30d" => "30", "7d" => "7", _ => "1" };
+            let mut v = run_tracker(vec!["usage".into(), "summary".into(), days.into()]).await.map_err(|_| e.clone())?;
+            v["fallback"] = e.into();
+            Ok(v)
+        }
+        r => r,
+    }
 }
 
 /// Creates a one-time code with the owner session and runs the bundled agent's `enroll` with it.
@@ -1344,6 +1354,27 @@ async fn run_enroll(state: &AppState, server: String, code: String) -> Result<St
 /// sessions (the server also enforces this); prompt text and admin actions need the admin session.
 #[tauri::command]
 async fn api(state: State<'_, AppState>, method: String, path: String, body: Option<Value>) -> Result<Value, String> {
+    let admin = { let server = state.config.lock().unwrap().server.clone(); !server.is_empty() && state.token(&server).is_some() };
+    match api_remote(&state, method.clone(), path.clone(), body).await {
+        // The server can't answer (offline, its free limit, an error): a connected computer still
+        // sees its own usage, counted here by the tracker, with the reason. (The admin's view of all
+        // computers exists only on the server.)
+        Err(e) if !admin && method == "GET" && (path == "/overview" || path.starts_with("/overview?")) && server_down(&e) && state.agent.lock().unwrap().is_some() => {
+            let days = path.split(['?', '&']).find_map(|p| p.strip_prefix("days=")).and_then(|d| d.parse::<u32>().ok()).unwrap_or(30);
+            let mut v = run_tracker(vec!["usage".into(), days.clamp(1, 3660).to_string()]).await.map_err(|_| e.clone())?;
+            v["fallback"] = e.into();
+            Ok(v)
+        }
+        r => r,
+    }
+}
+
+/// Errors where the server couldn't answer (as opposed to "not allowed" or "signed out").
+fn server_down(e: &str) -> bool {
+    e == "offline" || e == "db_limit" || e == "server_error" || (e.starts_with("server_5"))
+}
+
+async fn api_remote(state: &AppState, method: String, path: String, body: Option<Value>) -> Result<Value, String> {
     if !path.starts_with('/') || path.contains("..") {
         return Err("bad_path".into());
     }
