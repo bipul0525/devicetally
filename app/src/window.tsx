@@ -1338,8 +1338,8 @@ function ItemPane({ k, cfg, save, live }: { k: string; cfg: MenuBarCfg; save: (c
         {k === 'agent' && <Card title="Look">
           <div class="field col"><span class="field-label">While working</span><Tiles label="While working" value={cfg.agent_motion || 'ring'} onChange={(v) => save({ ...cfg, agent_motion: v })} options={[
             ['ring', <span class="look-demo look-ring" />, 'Ring'], ['pulse', <span class="look-demo look-pulse" />, 'Pulse'], ['dots', <span class="look-demo look-dots"><i /><i /><i /></span>, 'Dots']]} /></div>
-          <div class="field col"><span class="field-label">When done</span><Tiles label="When done" value={cfg.agent_done || 'badge'} onChange={(v) => save({ ...cfg, agent_done: v })} options={[
-            ['badge', <span class="look-done">✓</span>, 'Badge'], ['seal', <span class="look-done seal">✓</span>, 'Seal'], ['check', <span class="look-done plain">✓</span>, 'Check']]} /></div>
+          <div class="field col"><span class="field-label">When done</span><Tiles label="When done" value={['ring', 'dot', 'spark'].includes(cfg.agent_done) ? cfg.agent_done : 'ring'} onChange={(v) => save({ ...cfg, agent_done: v })} options={[
+            ['ring', <span class="look-done-ring">✓</span>, 'Ring'], ['dot', <span class="look-done-dot" />, 'Dot'], ['spark', <span class="look-done-spark">✦</span>, 'Spark']]} /></div>
         </Card>}
         <Card title="Size">
           <div class="field"><SizeControl id={`sz-${k}`} value={Math.round((st.scale || 1) * 100)} live={(v) => live(with_({ scale: v / 100 }))} save={(v) => save(with_({ scale: v / 100 }))} /></div>
@@ -1379,7 +1379,7 @@ function GeneralPane({ cfg, save, live }: { cfg: MenuBarCfg; save: (c: MenuBarCf
     <div class="mb-pane">
       <div class="mb-pane-head"><div class="mb-title"><span class="mb-title-icon"><NavIcon k="general" /></span><div><h2>General</h2><span class="hint" style={{ margin: 0 }}>For every item. Each item's own look is under its name.</span></div></div></div>
       <div class="field" style={{ justifyContent: 'flex-end', padding: 0, border: 0 }}>
-        <button class="btn" title="Keeps your items and their order" onClick={() => save({ ...cfg, font: 'system', weight: 'regular', label_color: '', value_color: '', ring_color: false, labels: true, layout: 'row', scale: 0, gap_pt: null, agent_motion: 'ring', agent_done: 'badge', styles: {} })}>Reset to the default look</button>
+        <button class="btn" title="Keeps your items and their order" onClick={() => save({ ...cfg, font: 'system', weight: 'regular', label_color: '', value_color: '', ring_color: false, labels: true, layout: 'row', scale: 0, gap_pt: null, agent_motion: 'ring', agent_done: 'ring', styles: {} })}>Reset to the default look</button>
       </div>
       <Card title="Items">
         <div class="field col"><Tiles label="Items" value={cfg.combined ? 'one' : 'separate'} onChange={(v) => save({ ...cfg, combined: v === 'one' })} options={[

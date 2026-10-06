@@ -39,7 +39,7 @@ pub struct MenuBar {
     pub combined: bool,
     /// Agent status ring in state colours (orange, red, green) instead of the menu bar's colour.
     pub ring_color: bool,
-    /// Agent status while working: "ring" (comet), "pulse" or "dots"; when done: "badge", "seal", "check".
+    /// Agent status while working: "ring" (comet), "pulse" or "dots"; when done: "ring", "dot", "spark".
     pub agent_motion: String,
     pub agent_done: String,
     /// Drawn as its own menu-bar item (set by the app, not saved).
@@ -146,7 +146,7 @@ impl Default for MenuBar {
         MenuBar {
             // First launch: three items, normal size and spacing, the menu bar's own colour.
             items: vec!["agent".into(), "net".into(), "temp".into()], layout: "row".into(), size: "small".into(), spacing: "normal".into(), labels: true, net_stack: true, scale: 1.2, gap: 0.0,
-            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(), combined: false, ring_color: false, solo: false, agent_motion: "ring".into(), agent_done: "badge".into(),
+            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(), combined: false, ring_color: false, solo: false, agent_motion: "ring".into(), agent_done: "ring".into(),
         }
     }
 }
@@ -757,14 +757,33 @@ impl Canvas<'_> {
                     }
                 }
             }
-            Agent::Waiting | Agent::Done => {
-                // Done: a disc, a seal (a disc with a scalloped edge) or the check alone.
-                let plain = a == Agent::Done && look.done == 2;
-                if a == Agent::Done && look.done == 1 {
-                    self.fill(bx, col, |px, py| dist(px, py) <= r * (0.9 + 0.1 * (8.0 * (py - cy).atan2(px - cx)).cos()));
-                } else if !plain {
-                    self.fill(bx, col, |px, py| dist(px, py) <= r);
+            // Done: "ring" (the working ring closed, a thin check inside), "dot" (a solid dot) or "spark" (a four-pointed sparkle).
+            Agent::Done => {
+                match look.done {
+                    1 => {
+                        // No ring around it, so it never looks like the "pulse" working animation.
+                        self.fill(bx, col, |px, py| dist(px, py) <= r * 0.62);
+                    }
+                    2 => {
+                        // An astroid: |x|^½ + |y|^½ ≤ 1, pointed like a sparkle.
+                        self.fill(bx, col, |px, py| ((px - cx).abs() / r).sqrt() + ((py - cy).abs() / r).sqrt() <= 1.0);
+                    }
+                    _ => {
+                        self.fill(bx, col, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0);
+                        let seg = |px: f32, py: f32, (x1, y1): (f32, f32), (x2, y2): (f32, f32)| {
+                            let (dx, dy) = (x2 - x1, y2 - y1);
+                            let k = (((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                            ((px - x1 - k * dx).powi(2) + (py - y1 - k * dy).powi(2)).sqrt()
+                        };
+                        let w = (d * 0.12).max(1.6);
+                        let p = |fx: f32, fy: f32| (cx - r + d * fx, cy - r + d * fy);
+                        self.fill(bx, col, |px, py| seg(px, py, p(0.31, 0.52), p(0.44, 0.65)) <= w / 2.0 || seg(px, py, p(0.44, 0.65), p(0.70, 0.37)) <= w / 2.0);
+                    }
                 }
+            }
+            Agent::Waiting => {
+                let plain = false;
+                self.fill(bx, col, |px, py| dist(px, py) <= r);
                 // White mark: "!" or ✓, antialiased by supersampling.
                 let seg = |px: f32, py: f32, (x1, y1): (f32, f32), (x2, y2): (f32, f32)| {
                     let (dx, dy) = (x2 - x1, y2 - y1);
@@ -882,12 +901,12 @@ pub const FONTS: [&str; 12] = ["system", "rounded", "mono", "newyork", "helvetic
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AgentLook {
     pub motion: u8, // 0 ring, 1 pulse, 2 dots
-    pub done: u8,   // 0 badge, 1 seal, 2 check
+    pub done: u8,   // 0 ring, 1 dot, 2 spark
 }
 impl AgentLook {
     pub fn of(cfg: &MenuBar) -> Self {
         let motion = match cfg.agent_motion.as_str() { "pulse" => 1, "dots" => 2, _ => 0 };
-        let done = match cfg.agent_done.as_str() { "seal" => 1, "check" => 2, _ => 0 };
+        let done = match cfg.agent_done.as_str() { "dot" => 1, "spark" => 2, _ => 0 }; // older "badge"/"seal"/"check": ring
         AgentLook { motion, done }
     }
 }
@@ -1343,7 +1362,7 @@ mod look_preview {
         let mut v = tests::values();
         let mut rows: Vec<(Vec<u8>, u32, u32)> = vec![];
         let mut sheets: Vec<Vec<(Vec<u8>, u32, u32)>> = vec![];
-        for (motion, done) in [("ring", "badge"), ("pulse", "seal"), ("dots", "check")] {
+        for (motion, done) in [("ring", "ring"), ("pulse", "dot"), ("dots", "spark")] {
             let cfg = MenuBar { items: vec!["agent".into()], agent_motion: motion.into(), agent_done: done.into(), scale: 1.2, ..Default::default() };
             let mut frames = vec![];
             for (a, t) in [(Agent::Working, 0), (Agent::Working, 4), (Agent::Working, 8), (Agent::Working, 12), (Agent::Working, 16), (Agent::Waiting, 0), (Agent::Done, 0), (Agent::Idle, 0)] {
