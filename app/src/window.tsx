@@ -648,6 +648,8 @@ function Highlight({ text }: { text: string }) {
 const PROMPT_RANGES = [['1', 'Today'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', 'Year'], ['custom', 'Dates']] as const
 
 function PromptsView({ back }: { back: () => void }) {
+  // Prompts opened in full (the list has the first 400 characters).
+  const [full, setFull] = useState<Record<string, string>>({})
   const [text, setText] = useState('')
   const [q2, setQ2] = useState('')
   const [device, setDevice] = useState('')
@@ -733,7 +735,8 @@ function PromptsView({ back }: { back: () => void }) {
                     {p.title && <span class="hint" style={{ margin: 0 }} title="Session">{p.title}</span>}
                   </span>
                   {/* Without a search the list shows the first 400 characters of each prompt. */}
-                  <div><Highlight text={p.text ?? ''} />{!q2 && (p.text?.length ?? 0) >= 400 ? '…' : ''}</div>
+                  {full[p.id] != null ? <div>{full[p.id]} <button class="link-btn" onClick={() => setFull(({ [p.id]: _, ...rest }) => rest)}>Show less</button></div>
+                    : <div><Highlight text={p.text ?? ''} />{!q2 && (p.text?.length ?? 0) >= 400 && <>… <button class="link-btn" onClick={() => api<{ text: string }>(`/prompts/${encodeURIComponent(p.id)}`).then((r) => setFull((f) => ({ ...f, [p.id]: r.text })), () => {})}>Show full prompt</button></>}</div>}
                 </li>
               )
             })}

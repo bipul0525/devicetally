@@ -334,6 +334,11 @@ const ftsQuery = (q: string) => {
   return words.map((w, i) => `"${w}"${i === words.length - 1 ? '*' : ''}`).join(' ')
 }
 
+// One prompt in full (the list sends the first 400 characters of each).
+dashboard.get('/prompts/:id', async (c) => {
+  const r = await c.env.DB.prepare('SELECT id, ts, text FROM prompts WHERE id = ?').bind(c.req.param('id')).first()
+  return r ? c.json(r) : c.json({ error: 'not_found' }, 404)
+})
 dashboard.get('/prompts', async (c) => {
   const f = await filters(c)
   const q = ftsQuery(c.req.query('q') ?? '')
