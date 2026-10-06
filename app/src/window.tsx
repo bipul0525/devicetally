@@ -347,7 +347,7 @@ function SessionsTab({ admin }: { admin: boolean }) {
     <div class="page">
       <div class="toolbar"><Seg label="Range" value={range} options={RANGES} onChange={setRange} /></div>
       <Load q={q}>
-        {(rows) => !rows.length ? <p class="hint">No sessions in this range.</p> : (
+        {(rows) => !rows.length ? <p class="hint">No Claude Code sessions in this range. Sessions are Claude Code only for now: usage from Codex, OpenCode and other tools shows under {admin ? 'Overview' : 'My usage'}.</p> : (
           <table class="list">
             <thead><tr><th>Started</th><th>Project</th>{admin && devices.length > 1 && <th>Device</th>}<th class="r">Active</th><th class="r">Tokens</th></tr></thead>
             <tbody>
