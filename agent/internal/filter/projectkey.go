@@ -12,10 +12,20 @@ import (
 // (host/owner/repo, lowercase host, no scheme, user or .git), else "local/<folder name>".
 // Test vectors: fixtures/project-key.json.
 func ProjectKey(cwd string) (key, name string) {
-	if root, url := gitOrigin(cwd); url != "" {
+	// Claude Code's agent worktrees (<repo>/.claude/worktrees/<name>) belong to <repo>, also after
+	// the folder is deleted.
+	if i := strings.Index(filepath.ToSlash(cwd), "/.claude/worktrees/"); i > 0 {
+		cwd = cwd[:i]
+	}
+	root, url := gitOrigin(cwd)
+	if url != "" {
 		if k := NormalizeRemote(url); k != "" {
 			return k, k[strings.LastIndex(k, "/")+1:]
 		}
+	}
+	// A repo without a remote: its folder name, not the subfolder Claude Code ran in. (Not a home
+	// folder kept in git for dotfiles: every project would become "home".)
+	if home, _ := os.UserHomeDir(); root != "" && root != home && filepath.Dir(root) != root {
 		cwd = root
 	}
 	base := filepath.Base(cwd)

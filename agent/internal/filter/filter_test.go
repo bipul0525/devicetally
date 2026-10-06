@@ -120,3 +120,35 @@ func TestTemporaryFolders(t *testing.T) {
 }
 
 func home() string { h, _ := os.UserHomeDir(); return h }
+
+// Claude Code runs background agents in <repo>/.claude/worktrees/<name> and deletes the folder when
+// the agent finishes, often before the tracker reads the transcript: still the repo's project.
+func TestAgentWorktreeIsItsRepo(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "myrepo")
+	os.MkdirAll(filepath.Join(repo, ".git"), 0o700)
+	os.WriteFile(filepath.Join(repo, ".git", "config"), []byte("[remote \"origin\"]\n\turl = git@github.com:me/myrepo.git\n"), 0o600)
+	gone := filepath.Join(repo, ".claude", "worktrees", "agent-a8ccb1056acdc3f89")
+	if k, _ := ProjectKey(gone); k != "github.com/me/myrepo" {
+		t.Fatalf("deleted agent worktree: got %q", k)
+	}
+	if k, _ := ProjectKey(filepath.Join(repo, "web", "src")); k != "github.com/me/myrepo" {
+		t.Fatalf("subfolder: got %q", k)
+	}
+	local := filepath.Join(t.TempDir(), "offline-repo")
+	os.MkdirAll(filepath.Join(local, ".git"), 0o700)
+	os.WriteFile(filepath.Join(local, ".git", "config"), []byte("[core]\n"), 0o600)
+	if k, _ := ProjectKey(filepath.Join(local, ".claude", "worktrees", "agent-x")); k != "local/offline-repo" {
+		t.Fatalf("repo without a remote: got %q", k)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	os.MkdirAll(filepath.Join(home, ".git"), 0o700)
+	os.WriteFile(filepath.Join(home, ".git", "config"), []byte("[core]\n"), 0o600)
+	if k, _ := ProjectKey(filepath.Join(home, "code", "tool")); k != "local/tool" {
+		t.Fatalf("dotfiles home repo: got %q", k)
+	}
+	plain := filepath.Join(t.TempDir(), "notes", ".claude", "worktrees", "agent-1")
+	if k, _ := ProjectKey(plain); k != "local/notes" {
+		t.Fatalf("no git: got %q", k)
+	}
+}
