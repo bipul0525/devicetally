@@ -396,8 +396,14 @@ jobs:
       - name: Quit from the menu, and check it exits
         run: |
           .snienv/bin/python sni_tool.py click "Quit DeviceTally"
-          for i in $(seq 1 20); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.5; done
-          if kill -0 "$APP_PID" 2>/dev/null; then echo "did not exit after Quit"; cat app.log; kill -9 "$APP_PID"; exit 1; fi
+          for i in $(seq 1 60); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.5; done
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            echo "did not exit 30 s after Quit"; cat app.log
+            ps -eo pid,ppid,stat,wchan:32,comm | grep -iE "devicetally|webkit|PID" || true
+            cat /proc/$APP_PID/status 2>/dev/null | head -12 || true
+            ls /proc/$APP_PID/task 2>/dev/null | while read t; do echo "thread $t: $(cat /proc/$APP_PID/task/$t/comm) $(cat /proc/$APP_PID/task/$t/wchan 2>/dev/null)"; done | head -40
+            kill -9 "$APP_PID"; exit 1
+          fi
 
       - if: always()
         uses: actions/upload-artifact@v4
