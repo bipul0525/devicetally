@@ -117,6 +117,13 @@ export function UpdateAgent() {
   useEffect(() => {
     let busy = false, asked = '', alive = true
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    // Open at login is on by default once this computer is set up (switched on once; turning it
+    // off in Settings sticks). Without it, a restart leaves the menu bar and check-ins off.
+    invoke<{ signed_in: boolean; this_device_connected: boolean; local?: boolean }>('status').then((st) => {
+      if (!(st.signed_in || st.this_device_connected || st.local) || ls.get('dt-autostart-default')) return
+      ls.set('dt-autostart-default', '1')
+      import('@tauri-apps/plugin-autostart').then((m) => m.isEnabled().then((on) => (on ? undefined : m.enable()))).catch(() => {})
+    }, () => {})
     getVersion().then((v) => {
       if (ls.get('dt-updated-to') === v) {
         ls.del('dt-updated-to')

@@ -188,7 +188,13 @@ export function SignIn({ back, done }: { back: () => void; done: () => void }) {
   )
 }
 
-export function Onboarding({ done }: { done: () => void }) {
+export function Onboarding({ done: finished }: { done: () => void }) {
+  // Set up or joined: open at login from now on (Settings can turn it off).
+  const done = () => {
+    try { localStorage.setItem('dt-autostart-default', '1') } catch { /* fine */ }
+    import('@tauri-apps/plugin-autostart').then((m) => m.enable()).catch(() => {})
+    finished()
+  }
   const [path, setPath] = useState<'choose' | 'setup' | 'join' | 'signin'>('choose')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
