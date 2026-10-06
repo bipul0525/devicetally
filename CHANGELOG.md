@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.6.0
+
+- **Joining takes seconds:** a computer says it's connected right away and uploads its history in the background (it used to sit on "Connecting..." for many minutes on computers with a lot of history).
+- **Joining again is safe:** the same computer keeps its device, history and sessions (no duplicates in Devices); a computer joining a different server uploads its whole history there; an account you ignored stays ignored.
+- **Computers stay online with the app closed:** the tracker checks in every 5 minutes on Mac, Linux and Windows and says whether the app runs. Devices shows "Online · app closed", and a red "isn't reporting" when a computer goes quiet. The 5-minute job reinstalls itself if the system removes it.
+- **Open at login** is required on joined computers (locked in Settings) and on by default elsewhere. Only one DeviceTally runs at a time.
+- **When the server is down** (offline, or Cloudflare's free limit): clear messages saying what happened and when it's back, and each computer shows its own count, menu bar included.
+- **Server 1.0.4** (Settings → Server → Update server): far fewer database reads (it hit Cloudflare's free daily limit once), the free-limit pause explained, merged health reports, safe re-joining.
+- **Prompts:** open any prompt in full.
+- **Projects:** Claude Code agent worktrees and subfolders of repos without a remote count as their repo (they showed as "agent-…").
+- **Agent status when done:** a closed ring with a check, a dot or a spark.
+- **Linux:** live text next to the tray icon, a Menu bar tab that fits Linux, Linux cache locations and the Trash in Storage; tested on Ubuntu 22.04/24.04, Debian 12 and Arch.
+- In a full-screen app, the window opens on a regular desktop like other apps.
+- `devicetally status` shows hooks, the check-in job and whether the app runs.
+
 ## 1.5.0
 
 - **Just this computer:** use DeviceTally with no server and no account. Your AI usage (Claude Code, Codex, OpenCode, Kimi), agent status, menu bar and storage, counted on this computer; nothing leaves it. Connect to a server later and the history uploads.
