@@ -396,8 +396,10 @@ jobs:
       - name: Quit from the menu, and check it exits
         run: |
           .snienv/bin/python sni_tool.py click "Quit DeviceTally"
-          for i in $(seq 1 60); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.5; done
-          if kill -0 "$APP_PID" 2>/dev/null; then
+          # Exited = gone, or a zombie (exited, not yet reaped: containers have no init to reap it).
+          alive() { kill -0 "$APP_PID" 2>/dev/null && ! grep -q '^State:.*Z' /proc/$APP_PID/status 2>/dev/null; }
+          for i in $(seq 1 60); do alive || break; sleep 0.5; done
+          if alive; then
             echo "did not exit 30 s after Quit"; cat app.log
             ps -eo pid,ppid,stat,wchan:32,comm | grep -iE "devicetally|webkit|PID" || true
             cat /proc/$APP_PID/status 2>/dev/null | head -12 || true
