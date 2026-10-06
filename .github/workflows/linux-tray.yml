@@ -198,15 +198,35 @@ jobs:
               return {k: v.value for k, v in body[0].items()}
 
 
+          async def owner_of(bus, path):
+              # Registered by object path only (libayatana-appindicator): find the connection that
+              # exports it.
+              names = (await call(bus, 'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'ListNames'))[0]
+              for n in names:
+                  if not n.startswith(':'):
+                      continue
+                  try:
+                      xml = (await call(bus, n, path, 'org.freedesktop.DBus.Introspectable', 'Introspect'))[0]
+                  except Exception:
+                      continue
+                  if any(f'interface name="{i}"' in xml for i in ITEM_IFACES):
+                      return n
+              return ''
+
+
           async def registered_items(bus):
               raw = await get_prop(bus, WATCHER_BUS, WATCHER_PATH, WATCHER_BUS, 'RegisteredStatusNotifierItems')
               out = []
               for entry in raw:
                   if '/' in entry:
                       i = entry.index('/')
-                      out.append((entry[:i], entry[i:]))
+                      name, path = entry[:i], entry[i:]
                   else:
-                      out.append((entry, '/StatusNotifierItem'))
+                      name, path = entry, '/StatusNotifierItem'
+                  if not name:
+                      name = await owner_of(bus, path)
+                  if name:
+                      out.append((name, path))
               return out
 
 
