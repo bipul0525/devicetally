@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.1
+
+- **Updates show what's happening:** checking shows a spinner and the seconds (gives up after 30 s with a clear reason); updating shows the download in MB with a bar, then Installing and Restarting.
+- **Copy details:** if a check or an update fails, one click copies a short log (versions, steps, the exact error) to send to the admin. A failed automatic update is also shown in Settings → App.
+- **The menu bar starts readable after updating:** fixed colours are cleared once (an item in a fixed colour could vanish against the menu bar), normal size and spacing, and at least two items show.
+- **Agent status when done:** a new **Burst** (a dot with eight rays), next to Dot and Spark.
+
 ## 1.6.0
 
 - **Joining takes seconds:** a computer says it's connected right away and uploads its history in the background (it used to sit on "Connecting..." for many minutes on computers with a lot of history).

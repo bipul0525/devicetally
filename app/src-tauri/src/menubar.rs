@@ -39,7 +39,7 @@ pub struct MenuBar {
     pub combined: bool,
     /// Agent status ring in state colours (orange, red, green) instead of the menu bar's colour.
     pub ring_color: bool,
-    /// Agent status while working: "ring" (comet), "pulse" or "dots"; when done: "ring", "dot", "spark".
+    /// Agent status while working: "ring" (comet), "pulse" or "dots"; when done: "burst", "dot", "spark".
     pub agent_motion: String,
     pub agent_done: String,
     /// Drawn as its own menu-bar item (set by the app, not saved).
@@ -172,7 +172,7 @@ impl Default for MenuBar {
         MenuBar {
             // First launch: three items, normal size and spacing, the menu bar's own colour.
             items: vec!["agent".into(), "net".into(), "temp".into()], layout: "row".into(), size: "small".into(), spacing: "normal".into(), labels: true, net_stack: true, scale: 1.2, gap: 0.0,
-            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(), combined: false, ring_color: false, solo: false, agent_motion: "ring".into(), agent_done: "ring".into(),
+            gap_pt: None, weight: "regular".into(), font: "system".into(), label_color: String::new(), value_color: String::new(), styles: BTreeMap::new(), clock: Clock::default(), max_width: 0.0, status_dot: false, alerts: Alerts::default(), combined: false, ring_color: false, solo: false, agent_motion: "ring".into(), agent_done: "burst".into(),
         }
     }
 }
@@ -783,7 +783,7 @@ impl Canvas<'_> {
                     }
                 }
             }
-            // Done: "ring" (the working ring closed, a thin check inside), "dot" (a solid dot) or "spark" (a four-pointed sparkle).
+            // Done: "burst" (a dot with eight rays), "dot" (a solid dot) or "spark" (a four-pointed sparkle).
             Agent::Done => {
                 match look.done {
                     1 => {
@@ -795,15 +795,20 @@ impl Canvas<'_> {
                         self.fill(bx, col, |px, py| ((px - cx).abs() / r).sqrt() + ((py - cy).abs() / r).sqrt() <= 1.0);
                     }
                     _ => {
-                        self.fill(bx, col, |px, py| (dist(px, py) - (r - t / 2.0)).abs() <= t / 2.0);
+                        // A burst: a centre dot and eight short rays, rounded at both ends.
                         let seg = |px: f32, py: f32, (x1, y1): (f32, f32), (x2, y2): (f32, f32)| {
                             let (dx, dy) = (x2 - x1, y2 - y1);
                             let k = (((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
                             ((px - x1 - k * dx).powi(2) + (py - y1 - k * dy).powi(2)).sqrt()
                         };
-                        let w = (d * 0.12).max(1.6);
-                        let p = |fx: f32, fy: f32| (cx - r + d * fx, cy - r + d * fy);
-                        self.fill(bx, col, |px, py| seg(px, py, p(0.31, 0.52), p(0.44, 0.65)) <= w / 2.0 || seg(px, py, p(0.44, 0.65), p(0.70, 0.37)) <= w / 2.0);
+                        let w = (d * 0.11).max(1.5);
+                        let rays: Vec<((f32, f32), (f32, f32))> = (0..8)
+                            .map(|i| {
+                                let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                                ((cx + a.cos() * r * 0.55, cy + a.sin() * r * 0.55), (cx + a.cos() * (r - w / 2.0), cy + a.sin() * (r - w / 2.0)))
+                            })
+                            .collect();
+                        self.fill(bx, col, |px, py| dist(px, py) <= r * 0.24 || rays.iter().any(|(p1, p2)| seg(px, py, *p1, *p2) <= w / 2.0));
                     }
                 }
             }
@@ -927,12 +932,12 @@ pub const FONTS: [&str; 12] = ["system", "rounded", "mono", "newyork", "helvetic
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AgentLook {
     pub motion: u8, // 0 ring, 1 pulse, 2 dots
-    pub done: u8,   // 0 ring, 1 dot, 2 spark
+    pub done: u8,   // 0 burst, 1 dot, 2 spark
 }
 impl AgentLook {
     pub fn of(cfg: &MenuBar) -> Self {
         let motion = match cfg.agent_motion.as_str() { "pulse" => 1, "dots" => 2, _ => 0 };
-        let done = match cfg.agent_done.as_str() { "dot" => 1, "spark" => 2, _ => 0 }; // older "badge"/"seal"/"check": ring
+        let done = match cfg.agent_done.as_str() { "dot" => 1, "spark" => 2, _ => 0 }; // "burst", and older choices
         AgentLook { motion, done }
     }
 }
@@ -1402,7 +1407,7 @@ mod look_preview {
         let mut v = tests::values();
         let mut rows: Vec<(Vec<u8>, u32, u32)> = vec![];
         let mut sheets: Vec<Vec<(Vec<u8>, u32, u32)>> = vec![];
-        for (motion, done) in [("ring", "ring"), ("pulse", "dot"), ("dots", "spark")] {
+        for (motion, done) in [("ring", "burst"), ("pulse", "dot"), ("dots", "spark")] {
             let cfg = MenuBar { items: vec!["agent".into()], agent_motion: motion.into(), agent_done: done.into(), scale: 1.2, ..Default::default() };
             let mut frames = vec![];
             for (a, t) in [(Agent::Working, 0), (Agent::Working, 4), (Agent::Working, 8), (Agent::Working, 12), (Agent::Working, 16), (Agent::Waiting, 0), (Agent::Done, 0), (Agent::Idle, 0)] {

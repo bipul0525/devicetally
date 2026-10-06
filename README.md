@@ -57,7 +57,7 @@ What each agent is working on **right now** (its prompt, with a live timer), wha
 <td width="58%" valign="top">
 
 ### Pick a look
-While working: a **comet ring**, a **breathing pulse** or **wave dots**. When done: a closed **ring** with a check, a **dot** or a **spark**. In the menu bar's own colour, or orange / red / green.
+While working: a **comet ring**, a **breathing pulse** or **wave dots**. When done: a **burst**, a **dot** or a **spark**. In the menu bar's own colour, or orange / red / green.
 
 </td>
 </tr>
