@@ -15,10 +15,22 @@ export async function findUpdate(force = false): Promise<Update | null> {
   let last = 0
   try { last = Number(localStorage.getItem('dt-update-check') ?? 0) } catch {}
   if (!force && Date.now() - last < DAY) {
-    try { return localStorage.getItem('dt-update-available') ? await check() : null } catch { return null }
+    try { return localStorage.getItem('dt-update-available') ? await check({ timeout: 30_000 }) : null } catch { return null }
   }
-  const u = await check()
+  // A forced check keeps a short log (Settings → Copy details), like an update does.
+  const started = Date.now()
+  const lines = [`${new Date().toISOString()}  Checking for updates (DeviceTally ${await getVersion().catch(() => '?')})`, `${new Date().toISOString()}  Source: github.com/bipul0525/devicetally/releases/latest/download/latest.json`, `${new Date().toISOString()}  System: ${navigator.userAgent}`]
+  let u: Update | null
   try {
+    u = await check({ timeout: 30_000 })
+  } catch (x) {
+    lines.push(`${new Date().toISOString()}  FAILED after ${((Date.now() - started) / 1000).toFixed(1)} s: ${String(x)}`)
+    try { localStorage.setItem('dt-update-log', lines.join('\n')) } catch {}
+    throw x
+  }
+  lines.push(`${new Date().toISOString()}  Done in ${((Date.now() - started) / 1000).toFixed(1)} s: ${u ? `version ${u.version} available` : 'up to date'}`)
+  try {
+    localStorage.setItem('dt-update-log', lines.join('\n'))
     localStorage.setItem('dt-update-check', String(Date.now()))
     u ? localStorage.setItem('dt-update-available', u.version) : localStorage.removeItem('dt-update-available')
   } catch {}
@@ -27,53 +39,66 @@ export async function findUpdate(force = false): Promise<Update | null> {
 
 export function AppGroup() {
   const [version, setVersion] = useState('')
-  const [state, setState] = useState<'idle' | 'checking' | 'none' | 'available' | 'downloading' | 'error'>('idle')
+  const [state, setState] = useState<'idle' | 'checking' | 'none' | 'available' | 'updating' | 'error'>('idle')
   const [update, setUpdate] = useState<Update | null>(null)
-  const [progress, setProgress] = useState(0)
+  const [step, setStep] = useState<UpdateStep | null>(null)
   const [err, setErr] = useState('')
+  const [lastFailed] = useState(() => ls.get('dt-update-failed'))
   useEffect(() => { getVersion().then(setVersion) }, [])
 
+  const [secs, setSecs] = useState(0)
   const doCheck = async () => {
-    setState('checking'); setErr('')
+    setState('checking'); setErr(''); setSecs(0)
+    const t = setInterval(() => setSecs((n) => n + 1), 1000)
     try {
       const u = await findUpdate(true)
       setUpdate(u); setState(u ? 'available' : 'none')
-    } catch (x) { setErr(String(x)); setState('error') }
+    } catch (x) { setErr(String(x)); setState('error') } finally { clearInterval(t) }
   }
   const install = async () => {
     if (!update) return
-    setState('downloading'); setProgress(0)
-    let total = 0, got = 0
-    try {
-      await update.downloadAndInstall((e) => {
-        if (e.event === 'Started') total = e.data.contentLength ?? 0
-        if (e.event === 'Progress') { got += e.data.chunkLength; if (total) setProgress(Math.round((got / total) * 100)) }
-      })
-      try { localStorage.removeItem('dt-update-available') } catch {}
-      await relaunch()
-    } catch (x) { setErr(String(x)); setState('error') }
+    setState('updating'); setErr('')
+    try { await runUpdate(update, setStep) } catch (x) { setErr(String(x)); setState('error') }
   }
+  const mb = (b: number) => (b / 1e6).toFixed(1)
+  const stepText = !step ? 'Starting…'
+    : step.phase === 'installing' ? 'Installing…'
+    : step.phase === 'restarting' ? 'Restarting…'
+    : step.total ? `Downloading… ${mb(step.got)} of ${mb(step.total)} MB (${Math.round((step.got / step.total) * 100)}%)`
+    : step.got ? `Downloading… ${mb(step.got)} MB` : 'Downloading…'
 
   return (
     <section class="section"><h2>App</h2>
       <div class="group">
         <div class="field"><span>DeviceTally {version}</span>
-          {state === 'available' || state === 'downloading' ? null
+          {state === 'available' || state === 'updating' ? null
             : <button class="btn" disabled={state === 'checking'} onClick={doCheck}>{state === 'checking' ? 'Checking…' : 'Check for updates'}</button>}
         </div>
-        {state === 'none' && <div class="field"><span class="val">You have the latest version.</span></div>}
-        <AutoUpdateToggle />
-        <DockToggle />
-        {(state === 'available' || state === 'downloading') && update && (
+        {state === 'checking' && (
+          <div class="field" role="status" aria-live="polite"><span class="checking"><span class="spinner" aria-hidden="true" />
+            {secs < 8 ? `Checking GitHub for a new version… ${secs} s` : `Still checking (${secs} s): the connection may be slow. It gives up after 30 s.`}</span></div>
+        )}
+        {state === 'none' && <div class="field"><span class="val">✓ You have the latest version.</span></div>}
+        {(state === 'available' || state === 'updating') && update && (
           <>
             <div class="field"><span><b>Version {update.version} is available</b></span>
-              <button class="btn primary" disabled={state === 'downloading'} onClick={install}>{state === 'downloading' ? `Updating… ${progress}%` : 'Update and restart'}</button>
+              {state === 'available' && <button class="btn primary" onClick={install}>Update and restart</button>}
             </div>
-            {update.body && <p class="hint" style={{ whiteSpace: 'pre-wrap', maxHeight: 120, overflow: 'auto', margin: '0 0 8px' }} tabIndex={0}>{update.body.replace(/```[\s\S]*?```/g, '').slice(0, 600)}</p>}
+            {state === 'updating' && (
+              <div class="field col" role="status" aria-live="polite">
+                <span>{stepText}</span>
+                <div class="track update-track"><div class={!step?.total && step?.phase === 'downloading' ? 'indeterminate' : ''} style={{ width: step?.phase === 'downloading' ? (step.total ? `${(step.got / step.total) * 100}%` : '35%') : '100%' }} /></div>
+                <span class="hint" style={{ margin: 0 }}>Keep DeviceTally open; it restarts by itself when the update is installed.</span>
+              </div>
+            )}
+            {update.body && state !== 'updating' && <p class="hint" style={{ whiteSpace: 'pre-wrap', maxHeight: 120, overflow: 'auto', margin: '0 0 8px' }} tabIndex={0}>{update.body.replace(/```[\s\S]*?```/g, '').slice(0, 600)}</p>}
           </>
         )}
+        <AutoUpdateToggle />
+        <DockToggle />
       </div>
-      {err && <p class="err" role="alert">Update failed: {err}</p>}
+      {err && <p class="err" role="alert">{update ? "The update didn't work" : "Couldn't check for updates"}: {/timed out|timeout/i.test(err) ? 'GitHub didn\'t answer within 30 seconds. Check the internet connection and try again.' : updateErrorText(err)} <CopyLog /> <span class="hint">and send it to your DeviceTally admin.</span></p>}
+      {!err && lastFailed && lastFailed !== version && state !== 'updating' && <p class="hint">The last update (to {lastFailed}) didn't work. <CopyLog /></p>}
     </section>
   )
 }
@@ -101,6 +126,58 @@ const ls = {
   get: (k: string) => { try { return localStorage.getItem(k) } catch { return null } },
   set: (k: string, v: string) => { try { localStorage.setItem(k, v) } catch { /* fine */ } },
   del: (k: string) => { try { localStorage.removeItem(k) } catch { /* fine */ } },
+}
+
+export type UpdateStep = { phase: 'downloading' | 'installing' | 'restarting'; got: number; total: number }
+
+/**
+ * Downloads, installs and restarts, reporting each step and keeping a log of this attempt (saved
+ * in 'dt-update-log', so a failure can be copied from Settings and sent to the admin).
+ */
+export async function runUpdate(u: Update, onStep: (s: UpdateStep) => void = () => {}): Promise<void> {
+  const lines: string[] = []
+  const log = (m: string) => { lines.push(`${new Date().toISOString()}  ${m}`); ls.set('dt-update-log', lines.join('\n')) }
+  log(`DeviceTally ${u.currentVersion} → ${u.version}`)
+  log(`System: ${navigator.userAgent}`)
+  let total = 0, got = 0, lastLogged = 0
+  try {
+    log('Downloading')
+    onStep({ phase: 'downloading', got: 0, total: 0 })
+    await u.download((e) => {
+      if (e.event === 'Started') { total = e.data.contentLength ?? 0; log(`Download size: ${total ? (total / 1e6).toFixed(1) + ' MB' : 'unknown'}`) }
+      if (e.event === 'Progress') {
+        got += e.data.chunkLength
+        onStep({ phase: 'downloading', got, total })
+        if (got - lastLogged > 5e6) { lastLogged = got; log(`Downloaded ${(got / 1e6).toFixed(1)} MB`) }
+      }
+      if (e.event === 'Finished') log(`Downloaded ${(got / 1e6).toFixed(1)} MB; signature checked`)
+    })
+    log('Installing')
+    onStep({ phase: 'installing', got, total })
+    await u.install()
+    log('Installed; restarting')
+    onStep({ phase: 'restarting', got, total })
+    ls.del('dt-update-available'); ls.del('dt-update-failed')
+    ls.set('dt-updated-to', u.version)
+    await relaunch()
+  } catch (x) {
+    log(`FAILED: ${String(x)}`)
+    ls.set('dt-update-failed', u.version)
+    throw x
+  }
+}
+
+/** A plain reason for an update error. */
+export const updateErrorText = (msg: string) =>
+  /permission|denied|not permitted|read-only|authoriz/i.test(msg) ? 'This account can\'t install apps here. Ask an admin of this computer.'
+  : /network|timed out|timeout|connect|dns|offline|sending request/i.test(msg) ? 'The download didn\'t get through. Check the internet connection and try again.'
+  : /signature/i.test(msg) ? 'The download didn\'t pass its signature check, so it wasn\'t installed.'
+  : msg.slice(0, 160)
+
+/** Copies the last update attempt's log, to send to the admin. */
+export function CopyLog() {
+  const [done, setDone] = useState(false)
+  return <button class="link-btn" onClick={() => navigator.clipboard.writeText(ls.get('dt-update-log') ?? 'No update log.').then(() => { setDone(true); setTimeout(() => setDone(false), 2000) })}>{done ? '✓ Copied' : 'Copy details'}</button>
 }
 
 /** "Update automatically" on this computer (the user's own choice; the admin can also set it). */
@@ -136,14 +213,13 @@ export function UpdateAgent() {
       busy = true
       try {
         while (waitQuiet && alive && await invoke<boolean>('in_use')) await sleep(30_000)
-        await u.downloadAndInstall()
-        ls.set('dt-updated-to', u.version); ls.del('dt-update-available')
         await invoke('report_update_error', { error: null })
-        await relaunch()
+        if (!waitQuiet) invoke('show_notice', { title: `Updating DeviceTally to ${u.version}`, body: 'Downloading… it restarts by itself in a moment.', kind: '' })
+        await runUpdate(u)
       } catch (x) {
         const msg = String(x)
         await invoke('report_update_error', { error: msg }).catch(() => {})
-        invoke('show_notice', { title: "DeviceTally couldn't update", body: /permission|denied|not permitted|read-only/i.test(msg) ? 'This account can\'t install apps here. Ask an admin of this computer.' : msg.slice(0, 120), kind: '' })
+        invoke('show_notice', { title: "DeviceTally couldn't update", body: `${updateErrorText(msg)} Details: Settings → App.`, kind: '' })
       } finally { busy = false }
     }
     const run = async () => {
