@@ -99,6 +99,9 @@ type Client struct {
 	HTTP                 *http.Client
 }
 
+// Health sends this computer's health report (merged with the app's on the server).
+func (c *Client) Health(report any) error { return c.do("POST", "/api/v1/health", report, nil) }
+
 func (c *Client) do(method, path string, body, out any) error {
 	var r io.Reader
 	if body != nil {

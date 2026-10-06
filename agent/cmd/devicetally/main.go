@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -202,10 +203,15 @@ func syncCmd() error {
 			if terr := syncer.RunTools(st, c, cfg); terr != nil {
 				st.ToolsError = terr.Error()
 			}
-			scheduleTools(st, len(syncer.Enabled(cfg)) > 0)
+			// Always scheduled on a joined computer: every 5 minutes it checks in, so the computer
+			// shows as online (and reports whether the app runs) even when the app is closed.
+			scheduleTools(st, true)
 		}
 		st.LastSync = time.Now()
 		writeHealth(st, locked)
+		if err == nil {
+			reportHealth(c, st)
+		}
 		if err != nil {
 			st.LastError = err.Error()
 		} else {
@@ -243,8 +249,33 @@ func writeHealth(st *state.State, locked bool) {
 	health.Write(state.Dir(), h, health.Read(state.Dir()).Removed)
 }
 
-// scheduleTools keeps a 5-minute sync scheduled exactly while some other AI tool is tracked
-// (those tools have no hooks to trigger a sync).
+// reportHealth sends the tracker's side of the health report: hooks, removed transcripts, its
+// version, whether tracking is paused and whether the DeviceTally app is running. Best effort.
+func reportHealth(c *syncer.Client, st *state.State) {
+	var r map[string]any
+	b, _ := json.Marshal(health.Read(state.Dir()))
+	json.Unmarshal(b, &r)
+	if r == nil {
+		r = map[string]any{}
+	}
+	r["from"] = "tracker"
+	r["agent"] = Version
+	r["paused"] = st.Paused
+	r["app_running"] = appRunning()
+	c.Health(r)
+}
+
+// appRunning reports whether the DeviceTally app is running on this computer.
+func appRunning() bool {
+	if runtime.GOOS == "windows" {
+		out, _ := exec.Command("tasklist", "/FI", "IMAGENAME eq devicetally-app.exe", "/NH").Output()
+		return strings.Contains(strings.ToLower(string(out)), "devicetally-app")
+	}
+	return exec.Command("pgrep", "-x", "devicetally-app").Run() == nil
+}
+
+// scheduleTools keeps the 5-minute background sync installed: other AI tools have no hooks, and
+// the check-in keeps the computer online while the app is closed.
 func scheduleTools(st *state.State, want bool) {
 	if want == st.ToolsScheduled || os.Getenv("DEVICETALLY_NO_SCHEDULE") != "" { // the latter for tests
 		return

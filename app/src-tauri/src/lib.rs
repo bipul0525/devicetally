@@ -1696,10 +1696,15 @@ fn show_main(app: &AppHandle, tab: &str) -> tauri::Result<()> {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.eval(&format!("window.dispatchEvent(new CustomEvent('dt:tab', {{ detail: '{tab}' }}))"));
         #[cfg(target_os = "macos")]
-        follow_desktop(&w);
+        {
+            as_regular_app_if_full_screen(app);
+            follow_desktop(&w);
+        }
         w.show()?;
         return w.set_focus();
     }
+    #[cfg(target_os = "macos")]
+    as_regular_app_if_full_screen(app);
     let w = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(format!("index.html?view=main&tab={tab}").into()))
         .title(if test_build() { "DeviceTally (test)" } else { "DeviceTally" })
         .inner_size(900.0, 640.0)
@@ -1709,8 +1714,37 @@ fn show_main(app: &AppHandle, tab: &str) -> tauri::Result<()> {
         .center()
         .build()?;
     #[cfg(target_os = "macos")]
-    follow_desktop(&w);
+    {
+        follow_desktop(&w);
+        // Closed: a menu-bar utility again (no Dock icon), unless the Dock icon is turned on.
+        let a = app.clone();
+        w.on_window_event(move |e| {
+            if matches!(e, tauri::WindowEvent::Destroyed) && !a.state::<AppState>().config.lock().unwrap().show_in_dock {
+                let _ = a.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+        });
+    }
     Ok(())
+}
+
+/// Whether you're in a full-screen app right now: its menu bar is hidden (the screen's visible
+/// frame reaches the top). Main thread.
+#[cfg(target_os = "macos")]
+fn in_full_screen() -> bool {
+    let mtm = unsafe { objc2_foundation::MainThreadMarker::new_unchecked() };
+    objc2_app_kit::NSScreen::mainScreen(mtm).is_some_and(|s| {
+        let (f, v) = (s.frame(), s.visibleFrame());
+        (f.origin.y + f.size.height) - (v.origin.y + v.size.height) < 1.0
+    })
+}
+
+/// In a full-screen app, DeviceTally opens its window like other apps, on a regular desktop: macOS
+/// only does that for apps with a Dock icon, so it has one while that window is open.
+#[cfg(target_os = "macos")]
+fn as_regular_app_if_full_screen(app: &AppHandle) {
+    if in_full_screen() {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    }
 }
 
 /// macOS: the main window opens on the desktop (Space) you're on, instead of switching you back to
@@ -1723,7 +1757,13 @@ fn follow_desktop(w: &tauri::WebviewWindow) {
         let Ok(ptr) = w2.ns_window() else { return };
         // SAFETY: the live NSWindow of this webview window, used on the main thread.
         let win = unsafe { &*(ptr as *const NSWindow) };
-        win.setCollectionBehavior(win.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace);
+        // On a normal desktop: open on the one you're on. In a full-screen app: like other apps, on a
+        // regular desktop (macOS switches there) instead of floating over the full-screen app. A
+        // full-screen space is spotted by its hidden menu bar (the screen's visible frame reaches the
+        // top).
+        let full_screen = in_full_screen();
+        let b = win.collectionBehavior() - NSWindowCollectionBehavior::FullScreenAuxiliary;
+        win.setCollectionBehavior(if full_screen { b - NSWindowCollectionBehavior::MoveToActiveSpace } else { b | NSWindowCollectionBehavior::MoveToActiveSpace });
     });
 }
 

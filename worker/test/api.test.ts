@@ -488,3 +488,18 @@ describe('other AI tools', () => {
     for (const p of ['/dl/tokscale/latest/cli-darwin-arm64.tgz', '/dl/tokscale/4.17.0/cli-evil.tgz', '/dl/tokscale/4.17.0/..%2Fx']) expect((await call(p)).status).toBe(404)
   })
 })
+
+describe('health from the app and the tracker', () => {
+  it('merges both reports and stamps who sent each', async () => {
+    const cookie = await owner()
+    const key = await device(cookie, 'Merge PC')
+    expect((await call('/api/v1/health', { json: { app: '1.6.0', disk_free: 5, disk_total: 10 }, key })).status).toBe(200)
+    expect((await call('/api/v1/health', { json: { from: 'tracker', agent: '1.6.0', app_running: false, hooks: 'user' }, key })).status).toBe(200)
+    const list = await (await call('/api/devices', { cookie })).json<{ name: string; health: Record<string, unknown> }[]>()
+    const h = list.find((d) => d.name === 'Merge PC')!.health
+    expect(h).toMatchObject({ app: '1.6.0', disk_free: 5, agent: '1.6.0', app_running: false, hooks: 'user' })
+    expect(typeof h.app_at).toBe('number')
+    expect(typeof h.tracker_at).toBe('number')
+    expect(h.from).toBeUndefined()
+  })
+})

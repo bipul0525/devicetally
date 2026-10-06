@@ -27,9 +27,12 @@ const health = (ts: number | null): { state: 'online' | 'idle' | 'offline'; text
   if (m < 1440) return { state: 'idle', text: `Idle · seen ${ago(ts)}` }
   return { state: 'offline', text: `Offline for ${Math.round(m / 1440)} d` }
 }
-const Health = ({ ts }: { ts: number | null }) => {
+/** Online / idle / offline from the last contact. With `appAt`, an online computer whose app
+ *  hasn't reported for 15 minutes (only the tracker's background check-in comes) says "app closed". */
+const Health = ({ ts, appAt }: { ts: number | null; appAt?: number | null }) => {
   const h = health(ts)
-  return <span class={`health ${h.state}`} title={ts ? `Last seen ${new Date(ts).toLocaleString()}` : 'Never seen'}><i />{h.text}</span>
+  const appClosed = appAt != null && h.state !== 'offline' && Date.now() - appAt > 15 * 60_000
+  return <span class={`health ${appClosed ? 'idle' : h.state}`} title={(ts ? `Last seen ${new Date(ts).toLocaleString()}` : 'Never seen') + (appClosed ? ` · the DeviceTally app last ran ${new Date(appAt!).toLocaleString()}; usage still arrives` : '')}><i />{h.text}{appClosed ? ' · app closed' : ''}</span>
 }
 const ago = (ts: number | null) => {
   if (!ts) return 'never'
@@ -210,7 +213,7 @@ function DevicesAtGlance({ selected, select }: { selected: string; select: (id: 
                 return (
                   <div key={d.id} class="note">
                     <span class="note-ic off" aria-hidden="true" />
-                    <span title="It may be switched off, or DeviceTally was removed from it."><b>{d.name}</b> is offline · last seen {days === 1 ? 'a day' : `${days} days`} ago</span>
+                    <span title="Nothing from its app or tracker. It may be switched off, offline, or DeviceTally was removed from it."><b>{d.name}</b> isn't reporting · last heard from {ago(d.last_seen ?? d.last_active)}</span>
                   </div>
                 )
               })}
@@ -417,7 +420,7 @@ function SessionDetail({ id, admin, back, project, devices }: { id: string; admi
 // ---------- Devices (admin) ----------
 type Device = { id: string; name: string; os: string | null; arch: string | null; agent_version: string | null; last_seen: number | null; revoked_at: number | null; disconnect_requested_at?: number | null
   health?: DeviceHealth | null; health_at?: number | null; disk_full_in_days?: number | null }
-type DeviceHealth = { hooks?: 'locked' | 'user' | 'missing'; locked?: boolean; paused?: boolean; removed?: { path: string; at: number }[]; config_dirs?: string[]; disk_free?: number; disk_total?: number; app?: string; agent?: string; update_error?: string }
+type DeviceHealth = { hooks?: 'locked' | 'user' | 'missing'; locked?: boolean; paused?: boolean; removed?: { path: string; at: number }[]; config_dirs?: string[]; disk_free?: number; disk_total?: number; app?: string; agent?: string; update_error?: string; app_at?: number; tracker_at?: number; app_running?: boolean }
 
 /** Under each computer in Devices: tracking health, disk, and the projects it's meant for. */
 function DeviceDetails({ d, settings, saved }: { d: Device; settings: SettingRow[]; saved: () => void }) {
@@ -552,7 +555,7 @@ function DevicesTab({ server }: { server: string }) {
                 <tr key={d.id} style={d.revoked_at ? { opacity: 0.5 } : undefined} class={d.revoked_at ? '' : 'has-details'}>
                   <td><span class="name"><Chip i={i} /> {d.name}</span></td>
                   <td class="hint" style={{ margin: 0 }}>{d.os ? `${OS[d.os] ?? d.os} · ${d.agent_version ?? ''}` : 'Waiting for first sync'}</td>
-                  <td>{d.revoked_at ? 'Disconnected' : <Health ts={d.last_seen} />}
+                  <td>{d.revoked_at ? 'Disconnected' : <Health ts={d.last_seen} appAt={d.health?.app_at} />}
                     {!d.revoked_at && d.disconnect_requested_at && <div class="request">Asks to be disconnected · {ago(d.disconnect_requested_at)}
                       <span><button class="btn primary" onClick={revoke(d)}>Approve</button> <button class="btn" onClick={() => decline(d)}>Decline</button></span></div>}</td>
                   <td class="r num">{fmt(usage.data?.by.device.find((x) => x.key === d.id)?.tokens ?? 0)}</td>

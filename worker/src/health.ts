@@ -1,5 +1,5 @@
-// Device health: what the app on each computer reports with its 5-minute check-in (tracking gaps,
-// lock state, disk), and a disk-full estimate from one reading a day.
+// Device health: what each computer reports every 5 minutes (tracking gaps, lock state, disk, whether
+// the app runs), and a disk-full estimate from one reading a day.
 import type { Context } from 'hono'
 import type { Env } from './auth'
 import { dayOf, ownerTimezone } from './days'
@@ -9,13 +9,19 @@ const MAX = 16_000 // bytes of health JSON kept per device
 export async function reportHealth(c: Context<Env>) {
   const body = await c.req.json<Record<string, unknown>>().catch(() => null)
   if (!body || typeof body !== 'object') return c.json({ error: 'bad_request' }, 400)
+  const now = Date.now()
+  // Two reporters: the app (every 5 minutes while it runs) and the tracker's background job (every 5
+  // minutes even when the app is closed). Each report is merged in, stamped with its sender's time,
+  // so the admin sees "online" from either and whether the app itself is running.
+  const from = body.from === 'tracker' ? 'tracker' : 'app'
+  delete body.from
+  body[from === 'tracker' ? 'tracker_at' : 'app_at'] = now
   const json = JSON.stringify(body)
   if (json.length > MAX) return c.json({ error: 'too_large' }, 413)
   const db = c.env.DB
-  const now = Date.now()
   const id = c.get('deviceId')
   const free = Number(body.disk_free), total = Number(body.disk_total)
-  const stmts = [db.prepare('UPDATE devices SET health = ?, health_at = ?, last_seen = ? WHERE id = ?').bind(json, now, now, id)]
+  const stmts = [db.prepare("UPDATE devices SET health = json_patch(coalesce(health, '{}'), ?), health_at = ?, last_seen = ? WHERE id = ?").bind(json, now, now, id)]
   if (free > 0 && total > 0) {
     // One reading a day (the latest wins): enough for a trend, and only one write per check-in.
     stmts.push(db.prepare('INSERT INTO disk_samples (device_id, day, free, total) VALUES (?, ?, ?, ?) ON CONFLICT DO UPDATE SET free = excluded.free, total = excluded.total')
