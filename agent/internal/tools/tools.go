@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha512"
+	"devicetally/agent/internal/netx"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -101,7 +102,7 @@ func Ensure(server string) (string, error) {
 	if server == "" { // no server (just this computer): straight from npm; the integrity check below still applies
 		url = fmt.Sprintf("https://registry.npmjs.org/@tokscale/%s/-/%s-%s.tgz", pkg[0], pkg[0], Version)
 	}
-	res, err := (&http.Client{Timeout: 5 * time.Minute}).Get(url)
+	res, err := netx.Client(5 * time.Minute).Get(url)
 	if err != nil {
 		return "", err
 	}

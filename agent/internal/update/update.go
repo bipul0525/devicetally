@@ -5,6 +5,7 @@ package update
 import (
 	"bufio"
 	"crypto/sha256"
+	"devicetally/agent/internal/netx"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,7 +37,7 @@ func AssetName(goos, goarch string) string {
 	return n
 }
 
-var client = &http.Client{Timeout: 60 * time.Second}
+var client = netx.Client(60 * time.Second)
 
 func Latest(repo string) (*Release, error) {
 	res, err := client.Get(fmt.Sprintf("%s/repos/%s/releases/latest", API, repo))

@@ -5,6 +5,7 @@ package syncer
 import (
 	"bufio"
 	"bytes"
+	"devicetally/agent/internal/netx"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -117,7 +118,7 @@ func (c *Client) do(method, path string, body, out any) error {
 	req.Header.Set("content-type", "application/json")
 	h := c.HTTP
 	if h == nil {
-		h = &http.Client{Timeout: 10 * time.Second}
+		h = netx.Client(10 * time.Second)
 	}
 	res, err := h.Do(req)
 	if err != nil {

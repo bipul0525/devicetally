@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.3
+
+- **Blocking the server in the hosts file no longer stops tracking:** when a computer's own lookup sends the server's address nowhere (a line like `0.0.0.0 your-server` in /etc/hosts), the tracker and the app ask Cloudflare's DNS (1.1.1.1, over HTTPS) for the real address. The server's certificate is still checked.
+- **The admin sees it:** Devices shows "DeviceTally blocked in the hosts file", and Overview lists it; `devicetally status` says so on that computer.
+- **Updates are automatic by default** on every computer (installed when DeviceTally isn't in use, then it says so). The admin can choose "Ask the user" for all or per computer.
+- Sessions explains that it lists Claude Code sessions for now, and where other tools' usage is.
+
 ## 1.6.2
 
 - **Linux updates work for .deb installs:** the update file now names the .deb for .deb installs and the AppImage for AppImage installs (a .deb install was offered the AppImage: "invalid updater binary format"). Computers on an older version install 1.6.2 by hand once.

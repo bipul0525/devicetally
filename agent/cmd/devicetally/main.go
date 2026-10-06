@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"devicetally/agent/internal/activity"
 	"devicetally/agent/internal/health"
+	"devicetally/agent/internal/netx"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -262,6 +263,8 @@ func reportHealth(c *syncer.Client, st *state.State) {
 	r["agent"] = Version
 	r["paused"] = st.Paused
 	r["app_running"] = appRunning()
+	// Someone pointed the server's name at nowhere in the hosts file (uploads route around it).
+	r["server_blocked"] = netx.Blocked(netx.HostOf(st.Server))
 	c.Health(r)
 }
 
@@ -390,7 +393,7 @@ func enroll(args []string) error {
 		}
 	}
 	b, _ := json.Marshal(body)
-	res, err := (&http.Client{Timeout: 15 * time.Second}).Post(server+"/api/v1/enroll", "application/json", bytes.NewReader(b))
+	res, err := netx.Client(15*time.Second).Post(server+"/api/v1/enroll", "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -447,7 +450,7 @@ func enroll(args []string) error {
 func keyWorks(st *state.State) bool {
 	req, _ := http.NewRequest("GET", strings.TrimRight(st.Server, "/")+"/api/v1/config", nil)
 	req.Header.Set("Authorization", "Bearer "+st.DeviceKey)
-	res, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	res, err := netx.Client(10 * time.Second).Do(req)
 	if err != nil {
 		return false
 	}
@@ -566,6 +569,9 @@ func status() error {
 	fmt.Printf("Hooks:      %s\n", map[string]string{"locked": "in Claude Code's system-wide settings (locked)", "user": "installed", "missing": "MISSING: Claude Code isn't reporting to DeviceTally", "": "unknown"}[h.Hooks])
 	fmt.Printf("Check-in:   %s\n", map[bool]string{true: "every 5 minutes (background job installed)", false: "background job NOT installed: only when Claude Code runs"}[schedule.Installed()])
 	fmt.Printf("App:        %s\n", map[bool]string{true: "running", false: "not running"}[appRunning()])
+	if netx.Blocked(netx.HostOf(st.Server)) {
+		fmt.Printf("Blocked:    the hosts file (%s) sends %s nowhere; DeviceTally routes around it, but remove that line\n", netx.HostsPath, netx.HostOf(st.Server))
+	}
 	if len(st.ToolsTracked) > 0 {
 		fmt.Printf("Other tools: tracking %s (synced every 5 minutes)\n", strings.Join(st.ToolsTracked, ", "))
 	} else if len(st.ToolsSeen) > 0 {

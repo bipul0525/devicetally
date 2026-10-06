@@ -196,6 +196,7 @@ function DevicesAtGlance({ selected, select }: { selected: string; select: (id: 
     const out: string[] = []
     if (h.hooks === 'missing') out.push(`${d.name}: Claude Code tracking hooks are missing`)
     if (h.paused) out.push(`${d.name}: tracking is paused`)
+    if (h.server_blocked) out.push(`${d.name}: DeviceTally's server is blocked in its hosts file (usage still gets through)`)
     const removed = (h.removed ?? []).filter((r) => Date.now() - r.at < 7 * 86400_000).length
     if (removed) out.push(`${d.name}: ${removed} Claude Code transcript${removed > 1 ? 's were' : ' was'} deleted before upload`)
     if (!h.locked && h.config_dirs?.length) out.push(`${d.name}: Claude Code has another settings folder that isn't tracked`)
@@ -420,13 +421,13 @@ function SessionDetail({ id, admin, back, project, devices }: { id: string; admi
 // ---------- Devices (admin) ----------
 type Device = { id: string; name: string; os: string | null; arch: string | null; agent_version: string | null; last_seen: number | null; revoked_at: number | null; disconnect_requested_at?: number | null
   health?: DeviceHealth | null; health_at?: number | null; disk_full_in_days?: number | null }
-type DeviceHealth = { hooks?: 'locked' | 'user' | 'missing'; locked?: boolean; paused?: boolean; removed?: { path: string; at: number }[]; config_dirs?: string[]; disk_free?: number; disk_total?: number; app?: string; agent?: string; update_error?: string; app_at?: number; tracker_at?: number; app_running?: boolean }
+type DeviceHealth = { hooks?: 'locked' | 'user' | 'missing'; locked?: boolean; paused?: boolean; removed?: { path: string; at: number }[]; config_dirs?: string[]; disk_free?: number; disk_total?: number; app?: string; agent?: string; update_error?: string; app_at?: number; tracker_at?: number; app_running?: boolean; server_blocked?: boolean }
 
 /** Under each computer in Devices: tracking health, disk, and the projects it's meant for. */
 function DeviceDetails({ d, settings, saved }: { d: Device; settings: SettingRow[]; saved: () => void }) {
   const h = d.health
   const own = JSON.parse(settings.find((r) => r.scope === 'device' && r.scope_id === d.id)?.json ?? '{}') as { allowed_projects?: string[]; app_updates?: string; update_now?: number }
-  const globalUpdates = (JSON.parse(settings.find((r) => r.scope === 'global')?.json ?? '{}') as { app_updates?: string }).app_updates === 'auto' ? 'auto' : 'ask'
+  const globalUpdates = (JSON.parse(settings.find((r) => r.scope === 'global')?.json ?? '{}') as { app_updates?: string }).app_updates === 'ask' ? 'ask' : 'auto'
   const [mine, setMine] = useState('')
   useEffect(() => { import('@tauri-apps/api/app').then((m) => m.getVersion()).then(setMine, () => {}) }, [])
   const behind = !!(h?.app && mine && newer(mine, h.app))
@@ -448,6 +449,7 @@ function DeviceDetails({ d, settings, saved }: { d: Device; settings: SettingRow
     badges.push(h.locked ? ['ok', '🔒 Locked', 'Tracking is in Claude Code\'s system-wide settings'] : ['', 'Not locked', 'Settings → Lock this computer, on that computer'])
     if (h.hooks === 'missing') badges.push(['bad', 'Tracking hooks missing', 'Claude Code isn\'t reporting to DeviceTally on this computer'])
     if (h.paused) badges.push(['warn', 'Tracking paused', 'Someone ran "devicetally pause"'])
+    if (h.server_blocked) badges.push(['bad', 'DeviceTally blocked in the hosts file', 'Someone added a line to this computer\'s hosts file (/etc/hosts) that sends the DeviceTally server\'s address nowhere. Usage still gets through, because DeviceTally routes around it. To remove it, delete the line with the server\'s address from /etc/hosts on that computer (needs its admin password).'])
     if (recentRemoved.length) badges.push(['bad', `${recentRemoved.length} transcript${recentRemoved.length > 1 ? 's' : ''} deleted`, recentRemoved.map((r) => r.path).join('\n')])
     if (h.config_dirs?.length) badges.push([h.locked ? '' : 'warn', `Other Claude settings folder${h.config_dirs.length > 1 ? 's' : ''}${h.locked ? ' (covered by the lock)' : ''}`, h.config_dirs.join('\n')])
   } else badges.push(['', 'No health report yet', 'Reports come from DeviceTally 0.10 or newer on that computer'])
@@ -900,7 +902,7 @@ function AdminSettings({ openPrompts }: { openPrompts: () => void }) {
               <input id={`g-${k}`} type="checkbox" checked={global[k] ?? true} onChange={(e) => save({ [k]: e.currentTarget.checked })} /></div>
           ))}
           <div class="field"><label for="g-upd">Updates on joined computers<div class="hint" style={{ margin: 0 }}>Ask: a "new version" card with Update now / Later. Automatic: installs when DeviceTally isn't in use, then says so. Each device can override it (Devices).</div></label>
-            <select id="g-upd" value={global.app_updates === 'auto' ? 'auto' : 'ask'} onChange={(e) => save({ app_updates: e.currentTarget.value })}><option value="ask">Ask the user</option><option value="auto">Automatic</option></select></div>
+            <select id="g-upd" value={global.app_updates === 'ask' ? 'ask' : 'auto'} onChange={(e) => save({ app_updates: e.currentTarget.value })}><option value="auto">Automatic</option><option value="ask">Ask the user</option></select></div>
           <div class="field"><label for="keep">Keep prompt text for</label>
             <select id="keep" value={String(global.keep_prompts_days === null ? 'forever' : global.keep_prompts_days ?? 90)} onChange={(e) => save({ keep_prompts_days: e.currentTarget.value === 'forever' ? null : Number(e.currentTarget.value) })}>
               {[30, 90, 180, 365].map((d) => <option key={d} value={d}>{d} days</option>)}<option value="forever">Forever</option>

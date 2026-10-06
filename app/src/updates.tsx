@@ -224,7 +224,7 @@ export function UpdateAgent() {
     }
     const run = async () => {
       if (busy || !alive) return
-      const [mode, now] = await invoke<[string, number]>('update_policy').catch(() => ['ask', 0] as [string, number])
+      const [mode, now] = await invoke<[string, number]>('update_policy').catch(() => ['auto', 0] as [string, number]) // server unreachable: the default
       const forced = now > Number(ls.get('dt-update-now-done') ?? 0)
       const due = forced || Date.now() - Number(ls.get('dt-update-check') ?? 0) > 3 * 3600_000
       if (!due) return

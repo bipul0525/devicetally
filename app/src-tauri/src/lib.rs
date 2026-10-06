@@ -6,6 +6,7 @@ mod activity;
 mod lock;
 mod menubar;
 mod net;
+mod netx;
 #[cfg(target_os = "macos")]
 mod notify;
 mod storage;
@@ -511,7 +512,7 @@ fn in_use(app: AppHandle) -> bool {
 /// The device's own setting wins over the global one. Read with this computer's device key.
 #[tauri::command]
 async fn update_policy(state: State<'_, AppState>) -> Result<(String, i64), String> {
-    let Some((server, key)) = state.agent.lock().unwrap().clone() else { return Ok(("ask".into(), 0)) };
+    let Some((server, key)) = state.agent.lock().unwrap().clone() else { return Ok(("auto".into(), 0)) };
     let v: Value = state.http.get(format!("{server}/api/v1/config")).bearer_auth(&key).send().await.map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
     Ok(policy_of(&v))
 }
@@ -521,9 +522,10 @@ fn policy_of(config: &Value) -> (String, i64) {
     let rows = config["settings"].as_array().cloned().unwrap_or_default();
     let row = |scope: &str, id: &str| rows.iter().find(|r| r["scope"] == scope && r["scope_id"].as_str().unwrap_or_default() == id).map(|r| r["json"].clone());
     let (global, device) = (row("global", ""), row("device", me));
-    let mode = [&device, &global].iter().find_map(|r| r.as_ref().and_then(|j| j["app_updates"].as_str().map(String::from))).unwrap_or_else(|| "ask".into());
+    let mode = [&device, &global].iter().find_map(|r| r.as_ref().and_then(|j| j["app_updates"].as_str().map(String::from))).unwrap_or_else(|| "auto".into());
     let now = device.as_ref().and_then(|j| j["update_now"].as_i64()).unwrap_or(0);
-    (if mode == "auto" { mode } else { "ask".into() }, now)
+    // Automatic unless the admin chose "ask": joined computers keep themselves up to date.
+    (if mode == "ask" { mode } else { "auto".into() }, now)
 }
 
 /// The last failed update (e.g. a Mac account that can't change Applications), sent with the
@@ -2039,7 +2041,7 @@ pub fn run() {
             app.set_activation_policy(if cfg.show_in_dock { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory });
             app.manage(AppState {
                 config: Mutex::new(cfg.clone()),
-                http: reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?,
+                http: reqwest::Client::builder().timeout(Duration::from_secs(15)).dns_resolver(std::sync::Arc::new(netx::Resolver)).build()?,
                 token: Mutex::new(Some(read_session(&handle, &cfg.server))),
                 agent: Mutex::new(read_agent()),
                 sampler: Mutex::new(stats::Sampler::new()),
@@ -2205,7 +2207,7 @@ mod tests {
         assert_eq!(super::policy_of(&cfg), ("auto".into(), 0), "global applies; another device's row doesn't");
         let cfg = serde_json::json!({ "device_id": "d2", "settings": cfg["settings"] });
         assert_eq!(super::policy_of(&cfg), ("ask".into(), 5), "the device's own choice and update-now");
-        assert_eq!(super::policy_of(&serde_json::json!({})), ("ask".into(), 0), "default: ask");
+        assert_eq!(super::policy_of(&serde_json::json!({})), ("auto".into(), 0), "default: automatic");
     }
 
     #[test]
