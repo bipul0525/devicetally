@@ -142,6 +142,7 @@ func TestAgentWorktreeIsItsRepo(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows
 	os.MkdirAll(filepath.Join(home, ".git"), 0o700)
 	os.WriteFile(filepath.Join(home, ".git", "config"), []byte("[core]\n"), 0o600)
 	if k, _ := ProjectKey(filepath.Join(home, "code", "tool")); k != "local/tool" {
