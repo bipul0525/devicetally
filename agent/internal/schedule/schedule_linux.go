@@ -43,3 +43,9 @@ func Remove() error {
 	exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return nil
 }
+
+// Installed reports whether the timer is still there.
+func Installed() bool {
+	_, err := os.Stat(filepath.Join(unitDir(), unit+".timer"))
+	return err == nil
+}

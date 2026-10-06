@@ -1,6 +1,6 @@
-// Package schedule runs `devicetally sync` every 5 minutes with the OS's own scheduler. It is only
-// installed while another AI tool is tracked: those tools have no hooks, so nothing else would trigger
-// a sync. Each run is short (tokscale reads in well under a second) and exits; nothing stays resident.
+// Package schedule runs `devicetally sync` every 5 minutes with the OS's own scheduler, on every
+// joined computer: it checks in (so the computer shows as online with the app closed) and syncs other
+// AI tools, which have no hooks. Each run is short and exits; nothing stays resident.
 package schedule
 
 const Label = "dev.devicetally.sync"

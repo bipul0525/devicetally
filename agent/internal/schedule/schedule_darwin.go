@@ -44,3 +44,6 @@ func Remove() error {
 	}
 	return nil
 }
+
+// Installed reports whether the job is still there (macOS upgrades and cleaners can remove it).
+func Installed() bool { _, err := os.Stat(plistPath()); return err == nil }

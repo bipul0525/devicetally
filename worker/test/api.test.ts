@@ -503,3 +503,24 @@ describe('health from the app and the tracker', () => {
     expect(h.from).toBeUndefined()
   })
 })
+
+describe('joining again', () => {
+  it('keeps the same device (history, sessions) when the computer proves it with its previous key', async () => {
+    const cookie = await owner()
+    const join = async (previous?: { device_id: string; device_key: string }) => {
+      const { code } = await (await call('/api/devices/enroll', { json: { name: 'Rejoin Mac' }, cookie })).json<{ code: string }>()
+      return (await call('/api/v1/enroll', { json: { code, os: 'darwin', arch: 'arm64', agent_version: '1.6.0', previous } })).json<{ device_id: string; device_key: string }>()
+    }
+    const first = await join()
+    const again = await join(first)
+    expect(again.device_id).toBe(first.device_id)
+    expect(again.device_key).not.toBe(first.device_key)
+    expect((await call('/api/v1/config', { key: first.device_key })).status).toBe(401) // old key retired
+    expect((await call('/api/v1/config', { key: again.device_key })).status).toBe(200)
+    const devices = await (await call('/api/devices', { cookie })).json<{ name: string }[]>()
+    expect(devices.filter((d) => d.name === 'Rejoin Mac').length).toBe(1)
+    // A wrong previous key: a new device, nothing taken over.
+    const other = await join({ device_id: first.device_id, device_key: 'not-the-key' })
+    expect(other.device_id).not.toBe(first.device_id)
+  })
+})

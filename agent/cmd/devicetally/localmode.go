@@ -10,6 +10,7 @@ import (
 
 	"devicetally/agent/internal/hooks"
 	"devicetally/agent/internal/local"
+	"devicetally/agent/internal/schedule"
 	"devicetally/agent/internal/spawn"
 	"devicetally/agent/internal/state"
 	"devicetally/agent/internal/tools"
@@ -32,6 +33,7 @@ func localSetup() error {
 	}
 	hooks.InstallCodex(codexConfig(), exe)
 	linkOnPath(exe)
+	schedule.Remove()             // was joined: its 5-minute check-in has nothing to do now
 	spawn.Detached("local-tools") // other AI tools' history, in the background
 	fmt.Println("✓ DeviceTally is set up on this computer. Monitoring is on.")
 	return nil

@@ -19,8 +19,8 @@ type Removed struct {
 type Health struct {
 	At         int64     `json:"at"`
 	Hooks      string    `json:"hooks"` // locked (system-wide) | user | missing
-	Removed    []Removed `json:"removed,omitempty"`
-	ConfigDirs []string  `json:"config_dirs,omitempty"` // Claude settings folders besides ~/.claude
+	Removed    []Removed `json:"removed"`
+	ConfigDirs []string  `json:"config_dirs"` // Claude settings folders besides ~/.claude
 	Agent      string    `json:"agent"`
 }
 

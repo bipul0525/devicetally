@@ -277,7 +277,11 @@ func appRunning() bool {
 // scheduleTools keeps the 5-minute background sync installed: other AI tools have no hooks, and
 // the check-in keeps the computer online while the app is closed.
 func scheduleTools(st *state.State, want bool) {
-	if want == st.ToolsScheduled || os.Getenv("DEVICETALLY_NO_SCHEDULE") != "" { // the latter for tests
+	if os.Getenv("DEVICETALLY_NO_SCHEDULE") != "" { // tests
+		return
+	}
+	// Checked every sync, not trusted from state: macOS upgrades and cleaners can remove the job.
+	if want == st.ToolsScheduled && want == schedule.Installed() {
 		return
 	}
 	var err error
@@ -375,6 +379,11 @@ func enroll(args []string) error {
 	}
 
 	body := map[string]any{"code": code, "os": runtime.GOOS, "arch": runtime.GOARCH, "agent_version": Version}
+	// Joining the same server again: prove it's the same computer, so the server keeps its device
+	// (history, sessions) instead of adding a duplicate. The upload position carries on from there.
+	if prev, err := state.Load(); err == nil && prev.DeviceID != "" && prev.DeviceKey != "" && strings.TrimRight(prev.Server, "/") == server {
+		body["previous"] = map[string]string{"device_id": prev.DeviceID, "device_key": prev.DeviceKey}
+	}
 	if a := syncer.CurrentAccount(state.ClaudeDirs()[0]); a != nil {
 		if ask(fmt.Sprintf("Track Claude account %s?", a.Email)) {
 			body["account"] = a
@@ -402,6 +411,11 @@ func enroll(args []string) error {
 	if err != nil {
 		return err
 	}
+	// A new device on the server (another server, or the old one no longer proven): upload the whole
+	// history to it. The same device kept: carry on where uploads stopped.
+	if out.DeviceID != st.DeviceID {
+		st.Offsets, st.Seen, st.ToolsHash, st.ToolsFull = map[string]int64{}, nil, "", nil
+	}
 	st.Server, st.DeviceID, st.DeviceKey, st.Paused = server, out.DeviceID, out.DeviceKey, false
 	os.Remove(local.Marker()) // was "just this computer": from now on usage uploads, history included
 	if err := st.Save(); err != nil {
@@ -416,11 +430,15 @@ func enroll(args []string) error {
 	if out.Name == "" {
 		out.Name = "This device"
 	}
-	// Import existing history now, so the one message at the end means it is really done.
+	// Check the new key works and check in (seconds), then upload the history in the background:
+	// importing a large history first left "Connecting..." on screen for many minutes.
 	fmt.Print("Connecting...")
-	if err := syncCmd(); err != nil {
-		spawn.Detached("sync") // history finishes uploading in the background
+	if !keyWorks(st) {
+		fmt.Print("\r\033[K")
+		return fmt.Errorf("connected, but the server didn't answer just now; usage will upload when it does (check with `devicetally status`)")
 	}
+	reportHealth(client(st), st)
+	spawn.Detached("sync") // the history, then every 5 minutes (background job)
 	fmt.Print("\r\033[K✓ " + out.Name + " is connected. Monitoring is on.\n")
 	return nil
 }
@@ -520,6 +538,10 @@ func status() error {
 	if err != nil {
 		return err
 	}
+	if local.On() {
+		fmt.Println("Mode:       just this computer (no server; nothing is uploaded)")
+		return nil
+	}
 	if st.DeviceKey == "" {
 		fmt.Println("Not enrolled.")
 		return nil
@@ -540,6 +562,10 @@ func status() error {
 		fmt.Println("Last error:", st.LastError)
 	}
 	fmt.Printf("Waiting:    %d KB in %d transcripts tracked\n", pending/1024, len(st.Offsets))
+	h := health.Read(state.Dir())
+	fmt.Printf("Hooks:      %s\n", map[string]string{"locked": "in Claude Code's system-wide settings (locked)", "user": "installed", "missing": "MISSING: Claude Code isn't reporting to DeviceTally", "": "unknown"}[h.Hooks])
+	fmt.Printf("Check-in:   %s\n", map[bool]string{true: "every 5 minutes (background job installed)", false: "background job NOT installed: only when Claude Code runs"}[schedule.Installed()])
+	fmt.Printf("App:        %s\n", map[bool]string{true: "running", false: "not running"}[appRunning()])
 	if len(st.ToolsTracked) > 0 {
 		fmt.Printf("Other tools: tracking %s (synced every 5 minutes)\n", strings.Join(st.ToolsTracked, ", "))
 	} else if len(st.ToolsSeen) > 0 {

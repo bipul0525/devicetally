@@ -211,7 +211,12 @@ async fn get_summary(state: &AppState, range: &str) -> Result<Value, String> {
 /// Refreshes today's tokens (every 5 minutes and after sign-in/connect), then redraws the menu bar.
 async fn refresh_tray(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let tokens = get_summary(&state, "today").await.ok().map(|s| fmt_short(s["tokens"].as_f64().unwrap_or(0.0)));
+    // As in the panel: this computer's own count when the server can't answer.
+    let today = match get_summary(&state, "today").await {
+        Err(e) if server_down(&e) && state.agent.lock().unwrap().is_some() => run_tracker(vec!["usage".into(), "summary".into(), "1".into()]).await.ok(),
+        r => r.ok(),
+    };
+    let tokens = today.map(|s| fmt_short(s["tokens"].as_f64().unwrap_or(0.0)));
     *state.tokens_today.lock().unwrap() = tokens;
     draw_menubar(app);
 }
@@ -557,9 +562,9 @@ async fn heartbeat(app: &AppHandle) {
         h.insert("disk_total".into(), disk.disk_total.into());
         h.insert("app".into(), env!("CARGO_PKG_VERSION").into());
         h.insert("os".into(), std::env::consts::OS.into());
-        if let Some(e) = state.update_error.lock().unwrap().clone() {
-            h.insert("update_error".into(), e.into());
-        }
+        // Always sent (null when fine): the server merges reports, so a left-out key would keep an
+        // old error forever.
+        h.insert("update_error".into(), state.update_error.lock().unwrap().clone().map(Value::String).unwrap_or(Value::Null));
     }
     let res = state.http.post(format!("{server}/api/v1/health")).bearer_auth(&key).json(&health).send().await;
     // Servers before 0.10 have no /health; their config request still records "last seen".
@@ -2001,6 +2006,10 @@ pub fn run() {
         d.setInteger_forKey(2, &objc2_foundation::NSString::from_str("NSStatusItemSelectionPadding"));
     }
     tauri::Builder::default()
+        // One DeviceTally at a time: opening it again (Finder, Spotlight, login) shows the running one.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = show_main(app, "overview");
+        }))
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())

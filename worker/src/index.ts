@@ -47,7 +47,7 @@ app.get('/api/auth/state', async (c) => c.json({ setup_needed: !(await c.env.DB.
 // --- Agent API (v1) ---
 // Registered before the dashboard routes so the owner check on /api/* never runs for them.
 app.post('/api/v1/enroll', async (c) => {
-  const { code, os, arch, agent_version, account } = await c.req.json<Record<string, string> & { account?: Record<string, string> }>()
+  const { code, os, arch, agent_version, account, previous } = await c.req.json<Record<string, string> & { account?: Record<string, string>; previous?: { device_id?: string; device_key?: string } }>()
   const now = Date.now()
   const rlKey = `enroll:${c.req.header('cf-connecting-ip') ?? 'unknown'}`
   const rl = await c.env.DB.prepare('SELECT window_start, count FROM rate_limits WHERE key = ?').bind(rlKey).first<{ window_start: number; count: number }>()
@@ -65,15 +65,25 @@ app.post('/api/v1/enroll', async (c) => {
     ).bind(rlKey, now, ENROLL_WINDOW_MS).run()
     return c.json({ error: 'bad_or_expired_code' }, 403)
   }
-  const id = crypto.randomUUID()
   const key = randomToken()
-  await c.env.DB.prepare('INSERT INTO devices (id, name, os, arch, agent_version, key_hash, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(id, row.device_name, os ?? null, arch ?? null, agent_version ?? null, await sha256(key), now, now).run()
+  // Joining again on the same computer (it proves it with its previous key, even if that device was
+  // disconnected): the same device keeps its history and sessions, with a new key. Otherwise a new one.
+  const same = previous?.device_id && previous.device_key
+    ? await c.env.DB.prepare('SELECT id FROM devices WHERE id = ? AND key_hash = ?').bind(previous.device_id, await sha256(previous.device_key)).first<{ id: string }>()
+    : null
+  const id = same?.id ?? crypto.randomUUID()
+  if (same) {
+    await c.env.DB.prepare('UPDATE devices SET name = ?, os = ?, arch = ?, agent_version = ?, key_hash = ?, last_seen = ?, revoked_at = NULL, disconnect_requested_at = NULL WHERE id = ?')
+      .bind(row.device_name, os ?? null, arch ?? null, agent_version ?? null, await sha256(key), now, id).run()
+  } else {
+    await c.env.DB.prepare('INSERT INTO devices (id, name, os, arch, agent_version, key_hash, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(id, row.device_name, os ?? null, arch ?? null, agent_version ?? null, await sha256(key), now, now).run()
+  }
   // The account confirmed at install ("Track you@work.com? [Y/n]") is approved: the owner's code authorises it.
   if (account?.uuid) {
     await c.env.DB.prepare(
       `INSERT INTO accounts (uuid, email, display_name, org_name, plan, status, first_seen_device, first_seen_at) VALUES (?, ?, ?, ?, ?, 'approved', ?, ?)
-       ON CONFLICT (uuid) DO UPDATE SET status = 'approved'`,
+       ON CONFLICT (uuid) DO UPDATE SET status = 'approved' WHERE accounts.status = 'pending'`, // an "ignored" choice stays
     ).bind(account.uuid, account.email ?? null, account.display_name ?? null, account.org_name ?? null, account.plan ?? null, id, now).run()
   }
   return c.json({ device_id: id, device_key: key, device_name: row.device_name })

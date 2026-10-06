@@ -23,3 +23,6 @@ func Remove() error {
 	run("/Delete", "/F", "/TN", task)
 	return nil
 }
+
+// Installed reports whether the scheduled task is still there.
+func Installed() bool { return run("/Query", "/TN", task) == nil }

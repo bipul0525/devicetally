@@ -6,3 +6,4 @@ import "errors"
 
 func Install(string) error { return errors.New("no scheduler on this platform") }
 func Remove() error        { return nil }
+func Installed() bool      { return false }

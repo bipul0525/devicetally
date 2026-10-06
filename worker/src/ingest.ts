@@ -207,15 +207,15 @@ export async function ingest(c: Context<Env>) {
     const fresh = (await db.prepare(
       `WITH w AS (SELECT j.value->>'s' s, j.value->>'lo' lo FROM json_each(?1) j),
             nw AS (SELECT value id FROM json_each(?2)),
-            ev AS (SELECT t.session_id s, t.id, t.ts FROM turns t JOIN w ON t.session_id = w.s AND t.ts >= w.lo
-                   UNION ALL SELECT p.session_id, p.id, p.ts FROM prompts p JOIN w ON p.session_id = w.s AND p.ts >= w.lo),
+            ev AS (SELECT t.session_id s, 't:' || t.id id, t.ts FROM turns t JOIN w ON t.session_id = w.s AND t.ts >= w.lo
+                   UNION ALL SELECT p.session_id, 'p:' || p.id, p.ts FROM prompts p JOIN w ON p.session_id = w.s AND p.ts >= w.lo),
             g1 AS (SELECT s, ts - lag(ts) OVER (PARTITION BY s ORDER BY ts) gap FROM ev),
             g0 AS (SELECT s, ts - lag(ts) OVER (PARTITION BY s ORDER BY ts) gap FROM ev WHERE id NOT IN (SELECT id FROM nw))
        SELECT w.s id,
               coalesce((SELECT sum(CASE WHEN gap < ?3 THEN gap END) FROM g1 WHERE g1.s = w.s), 0)
             - coalesce((SELECT sum(CASE WHEN gap < ?3 THEN gap END) FROM g0 WHERE g0.s = w.s), 0) delta_ms
        FROM w`,
-    ).bind(JSON.stringify(windows), JSON.stringify(newEvents.map((e) => e.id)), ACTIVE_GAP_MS).all<{ id: string; delta_ms: number }>()).results
+    ).bind(JSON.stringify(windows), JSON.stringify([...changedTurns.filter((t) => !old.has(t.id)).map((t) => 't:' + t.id), ...newPrompts.map((p) => 'p:' + p.id)]), ACTIVE_GAP_MS).all<{ id: string; delta_ms: number }>()).results
       .map((r) => ({ id: r.id, active: Math.round(sessions.get(r.id)!.active_seconds + r.delta_ms / 1000) }))
     const active = new Rollup()
     const updates: { id: string; active: number }[] = []
