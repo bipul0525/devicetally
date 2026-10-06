@@ -1004,8 +1004,8 @@ function DeviceSettings({ st, refresh }: { st: Status; refresh: () => void }) {
     <section class="section"><h2>This computer</h2>
       <div class="group">
         <div class="field"><span>Connected to</span><span class="val">{st.agent_server.replace(/^https?:\/\//, '')}</span></div>
-        <div class="field"><label for="a">Open at login</label>
-          <input id="a" type="checkbox" checked={autostart} onChange={async (e) => { const on = e.currentTarget.checked; await (on ? enable() : disable()); setAutostart(on) }} /></div>
+        <div class="field"><label for="a">Open at login<div class="hint" style={{ margin: 0 }}>Required while this computer is connected. Ask your DeviceTally admin.</div></label>
+          <input id="a" type="checkbox" checked={autostart} disabled title="Required while this computer is connected" /></div>
         {req === 'approved' ? (
           <div class="field"><span>The admin disconnected this computer.<div class="hint" style={{ margin: 0 }}>Removing tracking deletes DeviceTally's hooks here. Usage already sent stays on the server.</div></span>
             {confirmRemove ? <span class="inline-confirm"><button class="btn danger" disabled={busy} onClick={remove}>Remove</button><button class="btn" onClick={() => setConfirmRemove(false)}>Cancel</button></span>
