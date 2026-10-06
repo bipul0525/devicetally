@@ -24,7 +24,11 @@ const want = {
   'darwin-aarch64': (n) => n === 'DeviceTally_aarch64.app.tar.gz',
   'darwin-x86_64': (n) => n === 'DeviceTally_x64.app.tar.gz',
   'windows-x86_64': (n) => n.endsWith('_windows-setup.exe'),
+  // Linux: the updater asks for the file matching how DeviceTally was installed (a .deb install
+  // can't take an AppImage: "invalid updater binary format"); the plain key is for older apps.
   'linux-x86_64': (n) => n.endsWith('_amd64.AppImage'),
+  'linux-x86_64-appimage': (n) => n.endsWith('_amd64.AppImage'),
+  'linux-x86_64-deb': (n) => n.endsWith('_amd64.deb'),
 }
 const platforms = {}
 for (const [platform, match] of Object.entries(want)) {

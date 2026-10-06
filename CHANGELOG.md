@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.2
+
+- **Linux updates work for .deb installs:** the update file now names the .deb for .deb installs and the AppImage for AppImage installs (a .deb install was offered the AppImage: "invalid updater binary format"). Computers on an older version install 1.6.2 by hand once.
+
 ## 1.6.1
 
 - **Updates show what's happening:** checking shows a spinner and the seconds (gives up after 30 s with a clear reason); updating shows the download in MB with a bar, then Installing and Restarting.
