@@ -115,6 +115,32 @@ impl Clock {
 }
 
 impl MenuBar {
+    /// A look that's always readable: no fixed colours (an item in a fixed colour can match the menu
+    /// bar's background, which follows the wallpaper, and disappear), normal size and spacing, and at
+    /// least two items. Items, their order and label styles are kept.
+    pub fn make_visible(&mut self) {
+        self.label_color.clear();
+        self.value_color.clear();
+        self.ring_color = false;
+        self.scale = 1.0;
+        self.gap_pt = None;
+        for st in self.styles.values_mut() {
+            st.color.clear();
+            st.label_color.clear();
+            st.scale = 0.0;
+        }
+        // Temperature or battery can show nothing (no sensor, no battery): make sure two items do.
+        let shows = |k: &String| !matches!(k.as_str(), "temp" | "battery");
+        for k in ["net", "agent"] { // inserted in front: agent ends up first
+            if self.items.iter().filter(|i| shows(i)).count() >= 2 {
+                break;
+            }
+            if !self.items.iter().any(|i| i == k) {
+                self.items.insert(0, k.to_string());
+            }
+        }
+    }
+
     pub fn scale(&self) -> f32 {
         if self.scale > 0.0 {
             return self.scale.clamp(0.5, 2.0);
@@ -1094,6 +1120,20 @@ mod tests {
         assert!(t.contains("18%") || t.contains('%'), "{t}");
         v.agent = (Agent::Idle, 0);
         assert!(!text(&units(&cfg, &v)).contains("Idle"), "idle is left out");
+    }
+
+    #[test]
+    fn made_visible_has_no_fixed_colours_and_two_items() {
+        let mut cfg = MenuBar { items: vec!["temp".into()], label_color: "#000000".into(), value_color: "#111111".into(), ring_color: true, scale: 1.8, gap_pt: Some(9.0), ..Default::default() };
+        cfg.styles.insert("temp".into(), ItemStyle { color: "#ff0000".into(), label_color: "#00ff00".into(), label: "icon".into(), scale: 1.5, ..Default::default() });
+        cfg.make_visible();
+        assert!(!cfg.colored(), "template image: macOS draws it in the menu bar's own colour");
+        assert!(!cfg.ring_color && cfg.scale == 1.0 && cfg.gap_pt.is_none());
+        assert_eq!(cfg.items, vec!["agent", "net", "temp"], "two items that always show are added in front");
+        assert_eq!(cfg.styles["temp"].label, "icon", "label style kept");
+        let mut two = MenuBar { items: vec!["cpu".into(), "clock".into()], ..Default::default() };
+        two.make_visible();
+        assert_eq!(two.items, vec!["cpu", "clock"], "already two visible items: unchanged");
     }
 
     #[test]

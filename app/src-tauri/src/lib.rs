@@ -33,7 +33,13 @@ struct Config {
     /// A Dock icon too (macOS); off by default: opened from the menu bar.
     #[serde(default)]
     show_in_dock: bool,
+    /// The version that last reset the menu bar to a readable look (see MenuBar::make_visible).
+    #[serde(default)]
+    menubar_reset: String,
 }
+
+/// Bumped when the menu bar should be reset to a readable look once, at the first start of a version.
+const MENUBAR_RESET: &str = "1.6.1";
 
 struct AppState {
     config: Mutex<Config>,
@@ -95,7 +101,15 @@ fn config_path(app: &AppHandle) -> PathBuf {
 }
 
 fn load_config(app: &AppHandle) -> Config {
-    std::fs::read(config_path(app)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    let mut cfg: Config = std::fs::read(config_path(app)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    // Once per MENUBAR_RESET: items left in a fixed colour (e.g. by the removed themes) could vanish
+    // against the menu bar; start from a look that's always readable.
+    if cfg.menubar_reset != MENUBAR_RESET {
+        cfg.menubar.make_visible();
+        cfg.menubar_reset = MENUBAR_RESET.into();
+        let _ = save_config(app, &cfg);
+    }
+    cfg
 }
 
 fn save_config(app: &AppHandle, c: &Config) -> Result<(), String> {
